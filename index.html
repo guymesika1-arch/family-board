@@ -214,6 +214,33 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 .tabs2{display:inline-flex;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:3px}
 .tabs2 button{border:0;background:none;height:36px;padding-inline:14px;border-radius:9px;font-weight:800}
 .tabs2 button[aria-pressed="true"]{background:var(--surface);box-shadow:var(--shadow)}
+.week-btn{display:flex;align-items:center;gap:12px;width:100%;margin-top:8px;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;text-align:start}
+.week-btn svg{width:24px;height:24px;flex:none;color:var(--accent)}
+.week-btn b{display:block;font-size:1rem}
+.week-btn span{font-size:.82rem;color:var(--muted)}
+.week-nav{display:flex;align-items:center;gap:8px;margin-top:8px}
+.week-nav h2{flex:1;min-width:0;margin:0;text-align:center;font-family:var(--f-display);font-weight:400;font-size:1.15rem;font-variant-numeric:tabular-nums}
+.strip4{grid-template-columns:repeat(4,1fr);margin-top:12px}
+.strip4 .stat{padding:8px 10px}
+.bars{display:flex;flex-direction:column;gap:8px;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px}
+.bar-row{display:grid;grid-template-columns:76px 1fr 28px;align-items:center;gap:10px;font-weight:700;font-size:.9rem}
+.bar-row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{height:10px;border-radius:5px;background:var(--surface2);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:5px;background:var(--c);min-width:4px}
+.bar-row .n{font-family:var(--f-num);text-align:end}
+.wday{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.wday.is-today{border-color:var(--accent)}
+.wday-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--surface2);font-weight:800}
+.wday-h .count{margin-inline-start:auto;font-family:var(--f-num);color:var(--muted);font-size:.85rem}
+.wrow{display:flex;align-items:stretch;gap:10px;padding:9px 14px 9px 10px;border-top:1px solid var(--line);cursor:pointer;min-height:48px}
+.wrow .wc{width:6px;border-radius:3px;background:var(--wb,var(--line));flex:none}
+.wrow .wt{width:54px;flex:none;font-family:var(--f-num);font-size:.86rem;font-weight:600;padding-top:2px}
+.wrow .wb{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.wrow .wb b{font-weight:800;overflow-wrap:anywhere}
+.wrow .tags{display:flex;flex-wrap:wrap;gap:4px}
+.wrow .wd{flex:none;width:20px;color:var(--ok);display:grid;place-items:center}
+.wrow.done b{text-decoration:line-through;opacity:.6}
+.wday .free{padding:10px 14px;color:var(--muted);font-size:.9rem;border-top:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -264,6 +291,8 @@ const I={
   next:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M15 6l-6 6 6 6"/></svg>',
   tick:'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
 };
+
+I.week='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>';
 
 /* ---------- state ---------- */
 const S={members:[],tasks:[],shopping:[],contacts:[],settings:{}};
@@ -633,7 +662,7 @@ function peopleRow(){
 /* ---------- views ---------- */
 function header(title){
   const fam=S.settings.family?`משפחת ${esc(S.settings.family)}`:'לוח המשפחה';
-  const showPeople=(UI.view==='today'||UI.view==='cal')&&S.members.length;
+  const showPeople=(UI.view==='today'||UI.view==='cal'||UI.view==='week')&&S.members.length;
   return `<header class="top"><div class="top-row"><div style="flex:1;min-width:0"><div class="fam">${fam}</div><h1>${title}</h1></div>
     <button class="icon-btn" data-act="settings" aria-label="הגדרות משפחה">${I.gear}</button></div>${showPeople?peopleRow():''}</header>`;
 }
@@ -657,6 +686,7 @@ function viewToday(){
   const un=unsentCount();
   if(un&&parents().length>1)h+=`<div class="sync-bar"><span>${un} שינויים עוד לא נשלחו לבן/בת הזוג</span><button class="btn primary" data-act="sendall">שליחה</button></div>`;
   h+=`<button class="report-btn" data-act="report">${I.sunrise}<div><b>דוח הבוקר${who?' של '+esc(who.name):''}</b><span>כל מה שצריך לשים לב אליו היום, מוכן לשליחה בוואטסאפ</span></div></button>`;
+  h+=`<button class="week-btn" data-act="week">${I.week}<div><b>הדוח השבועי</b><span>כל השבוע במבט אחד: לפי ימים, ילדים והורים</span></div></button>`;
   h+=`<section class="sec"><div class="sec-h"><h2>היום</h2><span class="count">${items.length}</span></div>${list(items.map(t=>card(t,d,{conflict:cids.has(t.id)})),'אין משימות להיום. לחצו על + כדי להוסיף חוג, תור או אירוע.')}</section>`;
   if(od.length)h+=`<section class="sec"><div class="sec-h"><h2>נשארו מהימים הקודמים</h2><span class="count">${od.length}</span></div>${list(od.map(t=>card(t,t.date,{late:true,showDate:true})),'')}</section>`;
   h+=`<section class="sec"><div class="sec-h"><h2>לביצוע, בלי תאריך</h2><span class="count">${ud.length}</span></div>${list(ud.map(t=>card(t,'')),'דברים כמו "להזמין מנקה" או "לקבוע תור לשיניים" אפשר להוסיף בלי תאריך, והם יחכו כאן עד שיטופלו.')}</section>`;
@@ -679,6 +709,7 @@ function viewCal(){
   const d=UI.calDay,items=itemsOn(d,UI.person),cids=conflictIds(conflicts(d));
   return header('יומן')+`<div class="cal-head"><button class="icon-btn" data-act="month" data-n="-1" aria-label="החודש הקודם">${I.prev}</button><h2>${monthName(UI.calMonth)}</h2><button class="icon-btn" data-act="month" data-n="1" aria-label="החודש הבא">${I.next}</button></div>
   <div class="grid">${g}</div>
+  <button class="week-btn" data-act="week" data-day="${UI.calDay}">${I.week}<div><b>הדוח השבועי</b><span>השבוע של ${dateShort(UI.calDay)}, יום אחרי יום</span></div></button>
   <section class="sec"><div class="sec-h"><h2>${dateLong(d)}</h2><span class="count">${items.length}</span>${d!==t0?'<button class="link" data-act="day" data-day="'+t0+'">להיום</button>':''}</div>${list(items.map(t=>card(t,d,{conflict:cids.has(t.id)})),'אין כלום ביום הזה. לחצו על + כדי להוסיף.')}</section>`;
 }
 function viewShop(){
@@ -716,6 +747,49 @@ function viewWelcome(){
 }
 const kidRow=i=>`<div style="display:flex;gap:8px;align-items:center"><span style="width:26px;height:26px;border-radius:50%;flex:none;background:${COLORS[i%COLORS.length]}"></span><input class="field wkid" id="wKid${i}" placeholder="שם הילד/ה" aria-label="ילד ${i+1}"></div>`;
 
+/* ---------- weekly report ---------- */
+function weekStartOf(d){const x=pd(d);x.setDate(x.getDate()-x.getDay());return ymd(x)}
+function weekData(ws,pid){
+  const days=[...Array(7)].map((_,i)=>{const d=addDays(ws,i);return {d,items:itemsOn(d,pid),conf:conflictIds(conflicts(d))}});
+  const all=days.flatMap(x=>x.items.map(t=>({t,d:x.d})));
+  return {days,all,done:all.filter(o=>isDone(o.t,o.d)).length,
+    confN:days.reduce((n,x)=>n+x.items.filter(t=>x.conf.has(t.id)).length,0),
+    unassigned:all.filter(o=>!(o.t.parents||[]).filter(member).length)};
+}
+const weekRange=ws=>`${dateShort(ws)}–${dateShort(addDays(ws,6))}`;
+function viewWeek(){
+  if(!UI.weekStart)UI.weekStart=weekStartOf(today());
+  const ws=UI.weekStart,pid=UI.person,W=weekData(ws,pid),t0=today(),thisWeek=weekStartOf(t0);
+  const rows=(list)=>{const max=Math.max(1,...list.map(x=>x.n));return list.map(x=>`<div class="bar-row"><span class="nm">${esc(x.m.name)}</span><span class="bar"><i style="--c:${x.m.color};width:${Math.round(x.n/max*100)}%"></i></span><span class="n">${x.n}</span></div>`).join('')};
+  const perKid=kids().map(m=>({m,n:W.all.filter(o=>(o.t.kids||[]).includes(m.id)).length}));
+  const perPar=parents().map(m=>({m,n:W.all.filter(o=>(o.t.parents||[]).includes(m.id)).length}));
+  const busiest=W.days.reduce((a,b)=>b.items.length>a.items.length?b:a,W.days[0]);
+  const who=pid?member(pid):null;
+  let h=header('דוח שבועי');
+  h+=`<div class="week-nav"><button class="icon-btn" data-act="wk" data-n="-1" aria-label="השבוע הקודם">${I.prev}</button><h2>${weekRange(ws)}${who?' · '+esc(who.name):''}</h2><button class="icon-btn" data-act="wk" data-n="1" aria-label="השבוע הבא">${I.next}</button></div>`;
+  if(ws!==thisWeek)h+=`<div style="text-align:center;margin-top:6px"><button class="link" style="background:none;border:0;color:var(--accent);font-weight:800" data-act="wk" data-n="0">חזרה לשבוע הנוכחי</button></div>`;
+  h+=`<div class="strip strip4"><div class="stat"><b>${W.all.length}</b><span>אירועים</span></div><div class="stat"><b>${W.done}</b><span>בוצעו</span></div><div class="stat"><b>${W.all.length-W.done}</b><span>פתוחות</span></div><div class="stat"><b>${W.confN}</b><span>חפיפות</span></div></div>`;
+  if(W.all.length){
+    h+='<div class="alerts">';
+    if(busiest.items.length>1)h+=`<div class="alert info">היום העמוס בשבוע: ${dateLong(busiest.d)}, עם ${busiest.items.length} משימות.</div>`;
+    if(W.unassigned.length&&parents().length>1)h+=`<div class="alert">${W.unassigned.length} משימות השבוע עוד בלי הורה אחראי. כדאי להחליט מי לוקח אותן.</div>`;
+    h+='</div>';
+  }
+  if(!pid&&(kids().length||parents().length))h+=`<section class="sec"><div class="sec-h"><h2>כמה כל אחד</h2></div><div class="bars">${perKid.length?`<span class="lbl" style="margin:0">ילדים</span>${rows(perKid)}`:''}${perPar.length?`<span class="lbl" style="margin:6px 0 0">הורים (אחריות)</span>${rows(perPar)}`:''}</div></section>`;
+  h+=`<section class="sec"><div class="sec-h"><h2>יום אחרי יום</h2></div><div class="list">${W.days.map(x=>`<div class="wday${x.d===t0?' is-today':''}"><div class="wday-h"><span>${dateLong(x.d)}</span>${x.d===t0?'<span class="pill soft">היום</span>':''}<span class="count">${x.items.length}</span></div>
+    ${x.items.length?x.items.map(t=>{const dn=isDone(t,x.d);return `<div class="wrow${dn?' done':''}" data-act="open" data-id="${t.id}" data-d="${x.d}"><span class="wc" style="${whenStyle(t)}"></span><span class="wt">${t.time||'כל היום'}</span><span class="wb"><b>${esc(t.title)}</b><span class="tags">${x.conf.has(t.id)?'<span class="pill warn">חפיפה</span>':''}${t.private?'<span class="pill soft">פרטי</span>':''}${kidChips(t)}${parentTags(t)}${t.location?`<span class="ptag" style="--c:transparent">${esc(t.location)}</span>`:''}</span></span><span class="wd">${dn?I.tick:''}</span></div>`}).join(''):'<div class="free">יום פנוי</div>'}</div>`).join('')}</div></section>`;
+  h+=`<div class="actions" style="margin-top:16px"><button class="btn primary" data-act="weekshare">שיתוף הדוח</button><button class="btn" data-act="weekcopy">העתקה</button></div>`;
+  return h;
+}
+function weekText(){
+  const ws=UI.weekStart||weekStartOf(today()),pid=UI.person,W=weekData(ws,pid),who=pid?member(pid):null;
+  const L=[`דוח שבועי${S.settings.family?' - משפחת '+S.settings.family:''}`,`${weekRange(ws)}${who?' · '+who.name:''}`,`${W.all.length} אירועים · ${W.done} בוצעו`];
+  W.days.forEach(x=>{L.push('',dateLong(x.d)+':');if(!x.items.length)L.push('יום פנוי');
+    x.items.forEach(t=>{const ks=(t.kids||[]).map(member).filter(Boolean).map(k=>k.name),ps=(t.parents||[]).map(member).filter(Boolean).map(p=>p.name);
+      L.push(`• ${t.time?t.time+' ':''}${t.title}${ks.length?' ('+ks.join(', ')+')':''}${ps.length?' · '+ps.join(', '):''}${isDone(t,x.d)?' ✓':''}`)})});
+  return L.join('\n');
+}
+
 function draw(){
   const app=document.getElementById('app'),nav=document.getElementById('nav'),fab=document.getElementById('fab');
   if(!UI.loaded){return}
@@ -727,7 +801,7 @@ function draw(){
   nav.hidden=false;fab.hidden=false;
   const v=UI.view;
   const focusId=document.activeElement&&document.activeElement.id;
-  app.innerHTML=v==='cal'?viewCal():v==='shop'?viewShop():v==='contacts'?viewContacts():viewToday();
+  app.innerHTML=v==='week'?viewWeek():v==='cal'?viewCal():v==='shop'?viewShop():v==='contacts'?viewContacts():viewToday();
   const shopLeft=S.shopping.filter(s=>!s.done).length;
   nav.innerHTML=`<div class="nav-in">${[['today','היום',I.today],['cal','יומן',I.cal],['shop','קניות',I.cart],['contacts','אנשי קשר',I.book]].map(([k,l,ic])=>`<button data-act="go" data-view="${k}" ${v===k?'aria-current="page"':''}>${ic}${l}${k==='shop'&&shopLeft?`<span class="badge">${shopLeft}</span>`:''}</button>`).join('')}</div>`;
   fab.setAttribute('aria-label',v==='shop'?'הוספת פריט לקניות':v==='contacts'?'הוספת איש קשר':'הוספת משימה');
@@ -1048,6 +1122,10 @@ const ACT={
   async migrate(el){el.disabled=true;el.textContent='מעביר את הלוח…';
     try{const ld=localData;const meId=member(myId)?myId:(ld.members.some(m=>m.id===lsGet('me'))?lsGet('me'):'');await createFamily(ld.settings.family||'',ld);if(meId)setTimeout(()=>linkMe(meId),1500);toast('הלוח עבר לענן. עכשיו אפשר להזמין את המשפחה מההגדרות.')}
     catch(e){console.warn(e);el.disabled=false;el.textContent='הפיכה ללוח משותף';toast('ההעברה לא הצליחה. בדקו את החיבור לאינטרנט ונסו שוב.')}},
+  week(el){UI.view='week';UI.weekStart=weekStartOf(el.dataset.day||today());draw();window.scrollTo(0,0)},
+  wk(el){const n=+el.dataset.n;UI.weekStart=n?addDays(UI.weekStart||weekStartOf(today()),7*n):weekStartOf(today());draw();window.scrollTo(0,0)},
+  weekshare(){shareText(weekText())},
+  async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
   addkidrow(){const w=document.getElementById('wKids');const n=w.children.length;w.insertAdjacentHTML('beforeend',kidRow(n));document.getElementById('wKid'+n).focus()}
 };
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el)return;const fn=ACT[el.dataset.act];if(fn)fn(el,e)});
