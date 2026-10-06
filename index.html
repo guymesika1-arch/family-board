@@ -806,6 +806,11 @@ const V_DAYS={'ראשון':0,'שני':1,'שלישי':2,'רביעי':3,'חמיש�
 const V_DAY_RE='ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת';
 const V_MONTHS={'ינואר':1,'פברואר':2,'מרץ':3,'מרס':3,'אפריל':4,'מאי':5,'יוני':6,'יולי':7,'אוגוסט':8,'ספטמבר':9,'אוקטובר':10,'נובמבר':11,'דצמבר':12};
 const V_NUMS={'אחת עשרה':11,'אחת-עשרה':11,'שתים עשרה':12,'שתיים עשרה':12,'אחת':1,'אחד':1,'שתיים':2,'שתים':2,'שניים':2,'שלוש':3,'שלושה':3,'ארבע':4,'ארבעה':4,'חמש':5,'חמישה':5,'שש':6,'שישה':6,'שבע':7,'שבעה':7,'שמונה':8,'תשע':9,'תשעה':9,'עשר':10,'עשרה':10,'עשרים':20,'שלושים':30,'ארבעים':40,'חמישים':50};
+// 11-31 in words, both genders ("שישה עשר", "שש עשרה", "עשרים ואחד")
+(()=>{const um=['אחד','שניים','שלושה','ארבעה','חמישה','שישה','שבעה','שמונה','תשעה'],uf=['אחת','שתיים','שלוש','ארבע','חמש','שש','שבע','שמונה','תשע'];
+  const tm=['אחד עשר','שנים עשר','שלושה עשר','ארבעה עשר','חמישה עשר','שישה עשר','שבעה עשר','שמונה עשר','תשעה עשר'],tf=['אחת עשרה','שתים עשרה','שלוש עשרה','ארבע עשרה','חמש עשרה','שש עשרה','שבע עשרה','שמונה עשרה','תשע עשרה'];
+  tm.forEach((w,i)=>V_NUMS[w]=11+i);tf.forEach((w,i)=>V_NUMS[w]=11+i);V_NUMS['שניים עשר']=12;V_NUMS['שתיים עשרה']=12;
+  um.concat(uf).forEach((w,i)=>{const n=i%9+1;V_NUMS['עשרים ו'+w]=20+n;if(n===1)V_NUMS['שלושים ו'+w]=31});})();
 const V_NUM_RE=Object.keys(V_NUMS).sort((a,b)=>b.length-a.length).join('|');
 const vnum=w=>w==null?NaN:/^\d+$/.test(w)?+w:(V_NUMS[w]??NaN);
 const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
@@ -845,7 +850,9 @@ function nextWeekday(from,wd,strictNext){const d=pd(from);let add=(wd-d.getDay()
 function parseVoice(raw,ctx){
   ctx=ctx||{};const now=ctx.now||new Date(),t0=ymd(now);
   let t=' '+String(raw||'').replace(/[“”"״]/g,'"').replace(/[!?،]/g,' ').replace(/\s+/g,' ').trim()+' ';
-  t=t.replace(/(\s)([בלמ])-(?=\S)/g,'$1$2').replace(/ (\d{1,2})\.(\d{2}) (?=בבוקר|בערב|אחה|אחרי|בצהריים)/g,' $1:$2 ');
+  // dictation adds direction marks and sentence punctuation; drop them but keep 16.10 and 16:30
+  t=t.replace(/[‎‏‪-‮⁦-⁩]/g,'').replace(/([^\s\d,])[.;:]+(?=\s)/g,'$1 ').replace(/(\d)[.;]+(?=\s)/g,'$1 ').replace(/\s+/g,' ');
+  t=t.replace(/(\s)([בלמה])[-־](?=\S)/g,'$1$2').replace(/ (\d{1,2})\.(\d{2}) (?=בבוקר|בערב|אחה|אחרי|בצהריים)/g,' $1:$2 ');
   const cut=(re,fn)=>{const m=t.match(re);if(!m)return null;const r=fn?fn(m):m;t=t.replace(m[0],' ');return r||m};
 
   // shopping list
@@ -857,6 +864,7 @@ function parseVoice(raw,ctx){
     return {kind:'shop',items};
   }
 
+  t=t.replace(/,/g,' ').replace(/\s+/g,' '); // commas only matter for shopping lists
   const task={title:'',cat:'אחר',date:'',time:'',dur:60,recur:'none',days:[],kids:[],parents:[],remind:ctx.remind??60,location:'',notes:''};
   let pm=null,hasTime=false,explicitDate=false,dateWd=null;
 
@@ -877,7 +885,8 @@ function parseVoice(raw,ctx){
 
   // dates
   cut(/\s(?:ב|ה|ל)?(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?=\s)/,m=>{let y=m[3]?+m[3]:now.getFullYear();if(y<100)y+=2000;const d=new Date(y,+m[2]-1,+m[1]);if(!m[3]&&ymd(d)<t0)d.setFullYear(y+1);task.date=ymd(d);explicitDate=true;return 1});
-  if(!task.date)cut(new RegExp(`\\s(?:ב|ה|ל)?(\\d{1,2}|${V_NUM_RE})\\s+(?:ב|ל)(${Object.keys(V_MONTHS).join('|')})(?=\\s)`),m=>{const dd=vnum(m[1]);if(!dd)return null;const d=new Date(now.getFullYear(),V_MONTHS[m[2]]-1,dd);if(ymd(d)<t0)d.setFullYear(d.getFullYear()+1);task.date=ymd(d);explicitDate=true;return 1});
+  if(!task.date)cut(new RegExp(`\\s(?:ב|ה|ל|בה|ב\\s?ה)?(\\d{1,2}|${V_NUM_RE})\\s+(?:ב|ל|של\\s+)?(${Object.keys(V_MONTHS).join('|')})(?:\\s+(\\d{4}))?(?=\\s)`),m=>{const dd=vnum(m[1]);if(!(dd>=1&&dd<=31))return null;const d=new Date(m[3]?+m[3]:now.getFullYear(),V_MONTHS[m[2]]-1,dd);if(!m[3]&&ymd(d)<t0)d.setFullYear(d.getFullYear()+1);task.date=ymd(d);explicitDate=true;return 1});
+  if(!task.date)cut(new RegExp(`\\s(?:ב|ה|ל|בה)?(\\d{1,2}|${V_NUM_RE})\\s+לחודש(\\s+הבא)?(?=\\s)`),m=>{const dd=vnum(m[1]);if(!(dd>=1&&dd<=31))return null;const d=new Date(now.getFullYear(),now.getMonth()+(m[2]?1:0),dd);if(!m[2]&&ymd(d)<t0)d.setMonth(d.getMonth()+1);task.date=ymd(d);explicitDate=true;return 1});
   if(!task.date)cut(/\s(?:ב)?מחרתיים\s/,()=>{task.date=addDays(t0,2);explicitDate=true;return 1});
   if(!task.date)cut(/\s(?:ב)?מחר(?:\s+(בבוקר|בערב|בצהריים))?\s/,m=>{task.date=addDays(t0,1);explicitDate=true;if(m[1])t+=' '+m[1]+' ';return 1});
   if(!task.date)cut(/\s(?:היום|הערב|הבוקר)\s/,m=>{task.date=t0;explicitDate=true;if(/ערב/.test(m[0]))pm=true;if(/בוקר/.test(m[0]))pm=false;return 1});
@@ -1196,6 +1205,9 @@ function settingsSheet(){
     <div class="two"><input class="field" type="time" id="sRepTime" value="${esc(S.settings.reportTime||'06:00')}" aria-label="שעת דוח הבוקר"><button class="btn" data-act="reptime">שמירה</button></div></div>
   <div class="set-sec"><h4>גיבוי</h4>
     <div class="actions"><button class="btn" data-act="backup">שמירת גיבוי לקובץ</button><label class="btn" for="restoreFile" style="cursor:pointer">שחזור מקובץ</label></div><input type="file" id="restoreFile" accept=".json,application/json" hidden></div>
+  <div class="set-sec"><h4>שיתוף עם חברים</h4>
+    <p class="hint">שולחים לחברים את האפליקציה כדי שיקימו לוח למשפחה שלהם. הם לא יראו את הלוח שלכם.</p>
+    <div class="actions"><button class="btn" data-act="sharefriends">שליחת האפליקציה לחברים</button></div></div>
   <p class="hint" style="margin-top:18px">התקנה בטלפון: באייפון פותחים ב-Safari, לוחצים על כפתור השיתוף ובוחרים "הוספה למסך הבית". באנדרואיד פותחים ב-Chrome, לוחצים על תפריט ⋮ ובוחרים "התקנת אפליקציה".</p>`,sh=>{
     sh.querySelector('#setForm').addEventListener('submit',async e=>{e.preventDefault();
       if(await putSettings({family:sh.querySelector('#sFam').value.trim(),remind:+sh.querySelector('#sRem').value})){closeSheet();toast('ההגדרות נשמרו')}});
@@ -1331,6 +1343,7 @@ const ACT={
   wk(el){const n=+el.dataset.n;UI.weekStart=n?addDays(UI.weekStart||weekStartOf(today()),7*n):weekStartOf(today());draw();window.scrollTo(0,0)},
   weekshare(){shareText(weekText())},
   async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
+  sharefriends(){shareText(`לוח המשפחה: אפליקציה חינמית לניהול חוגים, תורים, אירועים וקניות של כל המשפחה, עם צבע לכל ילד, דוח בוקר ודוח שבועי, והוספת משימות בקול.\nפותחים את הקישור ומקימים לוח למשפחה שלכם:\n${APP_URL}`)},
   voice(){voiceSheet()},
   mic(){startMic()},
   voicesave(){
