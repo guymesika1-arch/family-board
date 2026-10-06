@@ -1,0 +1,45 @@
+rules_version = '2';
+// Each family's board is readable and writable only by devices that joined it.
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signedIn() { return request.auth != null; }
+    function inFamily(fid) {
+      return signedIn() && exists(/databases/$(db)/documents/families/$(fid)/users/$(request.auth.uid));
+    }
+
+    // Invite code -> family. Knowing the code is what lets a device join.
+    match /invites/{code} {
+      allow get: if signedIn();
+      allow create: if inFamily(request.resource.data.familyId)
+                    && request.resource.data.keys().hasOnly(['familyId']);
+      allow delete: if inFamily(resource.data.familyId);
+    }
+
+    // Which family this device belongs to.
+    match /userIndex/{uid} {
+      allow read, write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /families/{fid} {
+      allow create: if signedIn() && request.resource.data.createdBy == request.auth.uid;
+      allow read: if inFamily(fid);
+      allow update: if inFamily(fid) && request.resource.data.createdBy == resource.data.createdBy;
+
+      // Devices connected to the family.
+      match /users/{uid} {
+        allow read: if inFamily(fid);
+        allow create: if signedIn() && request.auth.uid == uid && (
+          get(/databases/$(db)/documents/families/$(fid)).data.createdBy == uid ||
+          get(/databases/$(db)/documents/invites/$(request.resource.data.code)).data.familyId == fid
+        );
+        allow update: if signedIn() && request.auth.uid == uid && inFamily(fid);
+        allow delete: if inFamily(fid);
+      }
+
+      // Board data.
+      match /{col}/{id} {
+        allow read, write: if col in ['members', 'tasks', 'shopping', 'contacts'] && inFamily(fid);
+      }
+    }
+  }
+}

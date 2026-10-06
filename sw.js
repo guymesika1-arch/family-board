@@ -1,6 +1,6 @@
 // Service worker: keeps the app working offline and opens it from notifications.
-const VERSION = 'family-board-v1';
-const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
+const VERSION = 'family-board-v2';
+const SHELL = ['./', 'index.html', 'firebase-config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -29,8 +29,9 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // App files and Google Fonts: cache first, refresh in the background.
-  if (url.origin === location.origin || /fonts\.(googleapis|gstatic)\.com$/.test(url.hostname)) {
+  // App files, fonts and pinned libraries: cache first, refresh in the background.
+  if (url.origin === location.origin || /fonts\.(googleapis|gstatic)\.com$/.test(url.hostname) ||
+      (url.hostname === 'www.gstatic.com' && url.pathname.startsWith('/firebasejs/')) || url.hostname === 'cdnjs.cloudflare.com') {
     e.respondWith(
       caches.match(req).then(hit => {
         const net = fetch(req).then(res => {

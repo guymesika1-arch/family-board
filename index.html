@@ -199,6 +199,11 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 .set-sec .hint{margin:0}
 .sync-bar{display:flex;align-items:center;gap:10px;margin-top:12px;background:var(--accent-soft);color:var(--accent);border-radius:12px;padding:8px 12px 8px 8px;font-weight:700;font-size:.92rem}
 .sync-bar span{flex:1;min-width:0}
+.code-box{display:flex;align-items:center;gap:10px;background:var(--surface2);border:1px dashed var(--accent);border-radius:12px;padding:8px 8px 8px 14px}
+.code{font-family:var(--f-num);font-size:1.5rem;font-weight:600;letter-spacing:.14em;flex:1;color:var(--ink);user-select:all}
+.qr-box{display:flex;flex-direction:column;align-items:center;gap:12px;margin-top:12px}
+#qrEl{background:#fff;padding:12px;border-radius:12px}
+#qrEl img,#qrEl canvas{display:block}
 .sync-bar .btn{height:38px;font-size:.88rem}
 
 .toast{position:fixed;z-index:30;bottom:calc(150px + env(safe-area-inset-bottom,0px));inset-inline:16px;max-width:480px;margin:0 auto;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-weight:700;box-shadow:var(--shadow)}
@@ -218,6 +223,7 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 <div id="sheetRoot"></div>
 <div id="toastRoot"></div>
 
+<script src="firebase-config.js"></script>
 <script>
 document.documentElement.lang='he';document.documentElement.dir='rtl';
 
@@ -339,22 +345,148 @@ function dueAlerts(pid){
   return out.sort((a,b)=>a.st-b.st);
 }
 
-/* ---------- storage (on this phone) ---------- */
+/* ---------- storage: shared family board in the cloud, or this phone only ---------- */
 const COLS=['members','tasks','shopping','contacts'];
 S.deleted={};
+const CLOUD=!!(window.FIREBASE_CONFIG&&window.FIREBASE_CONFIG.apiKey);
 const Local={
-  load(){try{const o=JSON.parse(lsGet('data')||'null');if(o)COLS.concat('settings','deleted').forEach(k=>{if(o[k])S[k]=o[k]})}catch(e){}},
-  save(){try{localStorage.setItem('hp.data',JSON.stringify(S))}catch(e){toast('השמירה בטלפון נכשלה. ייתכן שהזיכרון מלא.')}}
+  load(into){const T=into||S;try{const o=JSON.parse(lsGet('data')||'null');if(o)COLS.concat('settings','deleted').forEach(k=>{if(o[k])T[k]=o[k]})}catch(e){}return T},
+  save(){if(CLOUD){savePrivate();return}try{localStorage.setItem('hp.data',JSON.stringify(S))}catch(e){toast('השמירה בטלפון נכשלה. ייתכן שהזיכרון מלא.')}}
 };
 let rq=0;function render(){if(rq)return;rq=setTimeout(()=>{rq=0;draw()},0)}
-function connect(){Local.load();UI.loaded=true;try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}render()}
 function newId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7)}
 function clean(o){const x={...o};delete x.id;return x}
 function commit(){Local.save();render();return true}
-function put(c,id,data){const a=S[c],i=a.findIndex(x=>x.id===id),o={...clean(data),id,updatedAt:Date.now()};i<0?a.push(o):a[i]=o;return commit()}
-function patch(c,id,data){const o=S[c].find(x=>x.id===id);if(o)Object.assign(o,data,{updatedAt:Date.now()});return commit()}
-function del(c,id){S[c]=S[c].filter(x=>x.id!==id);S.deleted[id]=Date.now();const cut=Date.now()-180*864e5;for(const k in S.deleted)if(S.deleted[k]<cut)delete S.deleted[k];return commit()}
-function putSettings(data){S.settings={...S.settings,...data,updatedAt:Date.now()};return commit()}
+
+/* cloud state */
+let fdb=null,auth=null,uid=null,fid=lsGet('fam')||'',famUsers=[],famCode='',cloudTasks=[],privTasks=[],unsubs=[],localData=null,askedWho=false;
+function loadPrivate(){try{privTasks=JSON.parse(lsGet('private')||'[]')}catch(e){privTasks=[]}}
+function savePrivate(){lsSet('private',JSON.stringify(privTasks))}
+function joinTasks(){S.tasks=cloudTasks.concat(privTasks)}
+const famRef=()=>fdb.collection('families').doc(fid);
+const fcol=c=>famRef().collection(c);
+// Cloud writes apply on screen at once and reach the server when online, so they are not awaited.
+function cw(p){p.catch(e=>{console.warn(e);toast(e&&e.code==='permission-denied'?'אין הרשאה לשמור בלוח הזה. ייתכן שהמכשיר נותק מהמשפחה.':'השמירה נכשלה. בדקו את החיבור לאינטרנט.')});return true}
+
+function put(c,id,data){
+  const o={...clean(data),updatedAt:Date.now()};
+  if(!CLOUD){const a=S[c],i=a.findIndex(x=>x.id===id);i<0?a.push({...o,id}):a[i]={...o,id};return commit()}
+  if(c==='tasks'){
+    if(o.private){privTasks=privTasks.filter(x=>x.id!==id).concat({...o,id});savePrivate();if(cloudTasks.some(x=>x.id===id))cw(fcol('tasks').doc(id).delete());joinTasks();render();return true}
+    if(privTasks.some(x=>x.id===id)){privTasks=privTasks.filter(x=>x.id!==id);savePrivate();joinTasks()}
+  }
+  return cw(fcol(c).doc(id).set(o));
+}
+function patch(c,id,data){
+  if(!CLOUD){const o=S[c].find(x=>x.id===id);if(o)Object.assign(o,data,{updatedAt:Date.now()});return commit()}
+  if(c==='tasks'){const p=privTasks.find(x=>x.id===id);if(p){Object.assign(p,data,{updatedAt:Date.now()});savePrivate();joinTasks();render();return true}}
+  return cw(fcol(c).doc(id).update({...data,updatedAt:Date.now()}));
+}
+function del(c,id){
+  if(!CLOUD){S[c]=S[c].filter(x=>x.id!==id);S.deleted[id]=Date.now();const cut=Date.now()-180*864e5;for(const k in S.deleted)if(S.deleted[k]<cut)delete S.deleted[k];return commit()}
+  if(c==='tasks'&&privTasks.some(x=>x.id===id)){privTasks=privTasks.filter(x=>x.id!==id);savePrivate();joinTasks();render();return true}
+  return cw(fcol(c).doc(id).delete());
+}
+function putSettings(data){
+  const s={...S.settings,...data,updatedAt:Date.now()};S.settings=s;
+  if(!CLOUD)return commit();
+  render();return cw(famRef().update({settings:s,name:s.family||''}));
+}
+function linkMe(id){
+  myId=id;lsSet('me',id);
+  if(id){UI.person=id;lsSet('person',id);personAuto=false}
+  if(CLOUD&&fid&&uid)cw(fcol('users').doc(uid).update({memberId:id}));
+}
+
+/* cloud connection */
+const FB='https://www.gstatic.com/firebasejs/10.14.1/';
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=src;s.onload=res;s.onerror=rej;document.head.appendChild(s)})}
+async function connect(){
+  try{navigator.storage&&navigator.storage.persist&&navigator.storage.persist()}catch(e){}
+  if(!CLOUD){Local.load();UI.loaded=true;render();return}
+  loadPrivate();joinTasks();
+  localData=Local.load({members:[],tasks:[],shopping:[],contacts:[],settings:{},deleted:{}});
+  try{for(const f of ['firebase-app-compat.js','firebase-auth-compat.js','firebase-firestore-compat.js'])await loadScript(FB+f)}
+  catch(e){UI.error='לא הצלחתי לטעון את האפליקציה. בדקו את החיבור לאינטרנט ונסו שוב.';UI.loaded=true;render();return}
+  firebase.initializeApp(window.FIREBASE_CONFIG);
+  auth=firebase.auth();fdb=firebase.firestore();
+  try{await fdb.enablePersistence({synchronizeTabs:true})}catch(e){}
+  auth.onAuthStateChanged(async u=>{
+    if(!u){try{await auth.signInAnonymously()}catch(e){UI.error='בפתיחה הראשונה צריך חיבור לאינטרנט. התחברו ונסו שוב.';UI.loaded=true;render()}return}
+    uid=u.uid;
+    if(!fid){try{const ix=await fdb.collection('userIndex').doc(uid).get();if(ix.exists)fid=ix.data().familyId||''}catch(e){}}
+    if(fid)openFamily(fid);else{UI.loaded=true;render();setTimeout(handleHash,30)}
+  });
+}
+function openFamily(id){
+  unsubs.forEach(f=>f());unsubs=[];fid=id;lsSet('fam',id);UI.loaded=false;
+  let pending=COLS.length+2;
+  const ready=()=>{if(--pending>0)return;UI.loaded=true;render();setTimeout(()=>{
+    if(!member(myId)&&S.members.length&&!askedWho&&!location.hash){askedWho=true;whoSheet()}
+    if(location.hash)handleHash();else morningCheck();notifyDue()},60)};
+  const onErr=e=>{if(e&&e.code==='permission-denied'){leaveLocal();toast('אין לך גישה ללוח הזה. אפשר להצטרף שוב עם קוד הזמנה.')}};
+  const fam=famRef();
+  let f1=true;unsubs.push(fam.onSnapshot(s=>{const d=s.data()||{};S.settings={...(d.settings||{})};if(!S.settings.family)S.settings.family=d.name||'';famCode=d.code||'';if(f1){f1=false;ready()}else render()},onErr));
+  let f2=true;unsubs.push(fam.collection('users').onSnapshot(s=>{famUsers=s.docs.map(x=>({...x.data(),id:x.id}));const me=famUsers.find(x=>x.id===uid);if(me&&me.memberId&&me.memberId!==myId){myId=me.memberId;lsSet('me',myId)}if(f2){f2=false;ready()}else render()},onErr));
+  COLS.forEach(c=>{let first=true;unsubs.push(fam.collection(c).onSnapshot(s=>{const rows=s.docs.map(x=>({...x.data(),id:x.id}));if(c==='tasks'){cloudTasks=rows;joinTasks()}else S[c]=rows;if(first){first=false;ready()}else render()},onErr))});
+}
+function leaveLocal(){unsubs.forEach(f=>f());unsubs=[];fid='';lsSet('fam','');famUsers=[];famCode='';COLS.forEach(c=>S[c]=[]);cloudTasks=[];joinTasks();S.settings={};myId='';lsSet('me','');UI.loaded=true;render()}
+const CODE_CHARS='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const newCode=()=>Array.from(crypto.getRandomValues(new Uint8Array(8)),b=>CODE_CHARS[b%32]).join('');
+async function createFamily(name,data){
+  const id=fdb.collection('families').doc().id,code=newCode(),ref=fdb.collection('families').doc(id);
+  const settings={...(data.settings||{}),family:name,remind:(data.settings||{}).remind??60,updatedAt:Date.now()};
+  await ref.set({name,createdBy:uid,code,createdAt:Date.now(),settings});
+  await ref.collection('users').doc(uid).set({joinedAt:Date.now(),code:'',memberId:''});
+  await fdb.collection('invites').doc(code).set({familyId:id});
+  await fdb.collection('userIndex').doc(uid).set({familyId:id});
+  const writes=[];COLS.forEach(c=>(data[c]||[]).forEach(x=>{if(!(c==='tasks'&&x.private))writes.push([c,x])}));
+  for(let i=0;i<writes.length;i+=400){const b=fdb.batch();writes.slice(i,i+400).forEach(([c,x])=>b.set(ref.collection(c).doc(x.id),{...clean(x),updatedAt:x.updatedAt||Date.now()}));await b.commit()}
+  (data.tasks||[]).filter(t=>t.private).forEach(t=>{if(!privTasks.some(p=>p.id===t.id))privTasks.push(t)});savePrivate();
+  askedWho=false;openFamily(id);
+}
+async function joinFamily(code){
+  code=String(code||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(code.length!==8){toast('קוד ההזמנה צריך להיות באורך 8 תווים.');return}
+  if(!uid){toast('עדיין מתחבר. נסו שוב בעוד רגע.');return}
+  try{
+    const inv=await fdb.collection('invites').doc(code).get();
+    if(!inv.exists){toast('הקוד לא נמצא. בדקו שהעתקתם אותו נכון.');return}
+    const id=inv.data().familyId;
+    await fdb.collection('families').doc(id).collection('users').doc(uid).set({joinedAt:Date.now(),code,memberId:''});
+    await fdb.collection('userIndex').doc(uid).set({familyId:id});
+    closeSheet();myId='';lsSet('me','');askedWho=false;openFamily(id);toast('הצטרפת ללוח המשפחה!');
+  }catch(e){console.warn(e);toast('ההצטרפות לא הצליחה. בדקו את החיבור לאינטרנט ואת הקוד, ונסו שוב.')}
+}
+function mergeCloud(inc){
+  let n=0;
+  COLS.forEach(c=>(inc[c]||[]).forEach(x=>{if(!x||!x.id)return;const cur=(c==='tasks'?S.tasks:S[c]).find(y=>y.id===x.id);
+    if(!cur||(x.updatedAt||0)>(cur.updatedAt||0)){n++;if(c==='tasks'&&x.private){privTasks=privTasks.filter(y=>y.id!==x.id).concat(x);savePrivate();joinTasks()}else cw(fcol(c).doc(x.id).set({...clean(x),updatedAt:x.updatedAt||Date.now()}))}}));
+  render();return n;
+}
+function whoSheet(){
+  const ms=[...parents(),...kids()];
+  openSheet(`<h3>מי את/ה במשפחה?</h3><p class="hint">כך האפליקציה תיפתח אצלך על המשימות שלך, ודוח הבוקר יהיה שלך.</p>
+   <div class="picks" style="margin-top:12px">${ms.map(m=>`<button class="pchip${m.role==='child'?' kid':''}" style="${cvars(m.color)};height:46px;font-size:1rem" data-act="iam" data-id="${m.id}" aria-pressed="false"><span class="dot"></span>${esc(m.name)}</button>`).join('')}</div>
+   <div class="actions" style="margin-top:14px"><button class="btn" data-act="member" data-me="1">אני לא ברשימה</button><button class="btn" data-act="closesheet">אחר כך</button></div>`);
+}
+function inviteSection(){
+  const name=u=>{const m=member(u.memberId);return m?esc(m.name):'עוד לא בחר/ה שם'};
+  return `<div class="set-sec"><h4>חיבור בני המשפחה</h4>
+    <p class="hint">כל מי שמצטרף עם הקוד רואה ומעדכן את אותו לוח, וכל שינוי מופיע אצל כולם מיד. מתאים גם לילדים.</p>
+    <div class="code-box"><span class="code" dir="ltr">${esc(famCode)}</span><button class="btn" data-act="copy" data-text="${esc(famCode)}">העתקה</button></div>
+    <div class="actions"><button class="btn primary" data-act="invite">שליחת הזמנה</button><button class="btn" data-act="qr">קוד QR לסריקה</button></div>
+    <span class="lbl" style="margin:8px 0 0">מחוברים ללוח (${famUsers.length})</span>
+    ${famUsers.map(u=>`<div class="mem"><span class="sw" style="--c:${member(u.memberId)?member(u.memberId).color:'var(--line)'}"></span><span class="n">${name(u)}${u.id===uid?'<small>הטלפון הזה</small>':''}</span>${u.id===uid?`<button class="btn" style="height:38px" data-act="who">החלפה</button>`:`<button class="btn" style="height:38px" data-act="kick" data-id="${u.id}">ניתוק</button>`}</div>`).join('')}
+    <div class="actions" style="margin-top:6px"><button class="btn" data-act="newcode">קוד הזמנה חדש</button><button class="btn danger" data-act="leaveask">יציאה מהלוח</button></div><div id="leaveBox"></div></div>`;
+}
+function joinSheet(code){
+  openSheet(`<h3>הצטרפות ללוח משפחה</h3><p class="hint">הקלידו את קוד ההזמנה שקיבלתם (8 תווים).</p>
+    <form class="form" id="joinForm2" autocomplete="off"><input class="field" id="joinCode2" dir="ltr" maxlength="12" autocapitalize="characters" style="font-family:var(--f-num);font-size:1.3rem;letter-spacing:.15em;text-align:center" value="${esc(code||'')}" placeholder="ABCD2345" aria-label="קוד הזמנה">
+    <button class="btn primary block" type="submit">הצטרפות</button></form>
+    ${fid?'<p class="hint">שימו לב: את/ה כבר מחובר/ת ללוח משפחה. הצטרפות תעביר את הטלפון הזה ללוח החדש.</p>':''}`);
+}
+function viewError(){return `<header class="top"><h1>לוח המשפחה</h1></header><div class="welcome"><h2 style="font-size:1.2rem">משהו לא נטען</h2><p>${esc(UI.error)}</p><button class="btn primary block" onclick="location.reload()">ניסיון נוסף</button></div>`}
 
 /* ---------- sync between phones (by message, no server) ---------- */
 const APP_URL=location.href.split('#')[0];
@@ -370,7 +502,7 @@ async function unpack(code){
   return JSON.parse(new TextDecoder().decode(u));
 }
 const lastChange=()=>Math.max(0,...COLS.flatMap(c=>S[c].map(x=>x.updatedAt||0)),...Object.values(S.deleted),S.settings.updatedAt||0);
-function unsentCount(){const at=+(lsGet('sentAt')||0);return COLS.reduce((n,c)=>n+S[c].filter(x=>!x.private&&(x.updatedAt||0)>at).length,0)+Object.values(S.deleted).filter(t=>t>at).length}
+function unsentCount(){if(CLOUD)return 0;const at=+(lsGet('sentAt')||0);return COLS.reduce((n,c)=>n+S[c].filter(x=>!x.private&&(x.updatedAt||0)>at).length,0)+Object.values(S.deleted).filter(t=>t>at).length}
 function merge(inc){
   const before=unsentCount();let n=0;
   for(const k in inc.deleted||{})if((S.deleted[k]||0)<inc.deleted[k])S.deleted[k]=inc.deleted[k];
@@ -565,17 +697,22 @@ function viewContacts(){
     <div class="acts">${c.phone?`<button class="btn" data-act="copy" data-text="${esc(c.phone)}">העתקת מספר</button><a class="btn" href="${waLink(c.phone)}" target="_blank" rel="noopener">וואטסאפ</a>`:''}<button class="btn" data-act="contact" data-id="${c.id}">עריכה</button></div></div>`),'עוד אין אנשי קשר. לחצו על + כדי להוסיף את רופא הילדים, המנקה או המסעדה האהובה.').replace('<div class="list">','<div class="list" style="margin-top:14px">');
 }
 function viewWelcome(){
-  return `<header class="top"><div class="fam">ברוכים הבאים</div><h1>לוח המשפחה</h1></header>
-  <div class="welcome"><h2>בואו נכיר את המשפחה</h2><p>כל ילד יקבל צבע משלו, כדי שבמבט אחד יהיה ברור של מי כל חוג ותור. אפשר לשנות הכל אחר כך בהגדרות.</p>
+  const hasLocal=CLOUD&&localData&&localData.members.length;
+  const join=CLOUD?`<div class="welcome"><h2 style="font-size:1.2rem">קיבלתם קוד הצטרפות?</h2><p>מצטרפים ללוח שבן משפחה כבר הקים, וכל השינויים יופיעו אצלכם מיד.</p>
+    <form class="add-row" id="joinForm" autocomplete="off" style="margin-top:0"><input id="joinCode" dir="ltr" maxlength="12" autocapitalize="characters" placeholder="קוד הזמנה" aria-label="קוד הזמנה" style="font-family:var(--f-num);letter-spacing:.12em"><button class="btn primary" type="submit">הצטרפות</button></form></div>`:'';
+  const migrate=hasLocal?`<div class="welcome"><h2 style="font-size:1.2rem">יש לך כבר לוח בטלפון הזה</h2><p>${localData.members.length} בני משפחה ו-${localData.tasks.length} משימות. אפשר להפוך אותו ללוח משותף ולהזמין אליו את כל המשפחה.</p>
+    <button class="btn primary block" data-act="migrate">הפיכה ללוח משותף</button></div>`:'';
+  const create=`<div class="welcome"><h2>${CLOUD?'הקמת לוח למשפחה שלכם':'בואו נכיר את המשפחה'}</h2><p>כל ילד יקבל צבע משלו, כדי שבמבט אחד יהיה ברור של מי כל חוג ותור. אפשר לשנות הכל אחר כך בהגדרות.</p>
   <form class="form" id="welcomeForm" autocomplete="off">
     <div><label class="lbl" for="wFam">שם המשפחה</label><input class="field" id="wFam" placeholder="לדוגמה: כהן"></div>
     <div class="two"><div><label class="lbl" for="wP1">הורה 1</label><input class="field" id="wP1" placeholder="שם"></div><div><label class="lbl" for="wP2">הורה 2</label><input class="field" id="wP2" placeholder="שם"></div></div>
     <div><span class="lbl">הילדים</span><div class="list" id="wKids">${[0,1,2].map(i=>kidRow(i)).join('')}</div>
     <button type="button" class="btn" style="margin-top:8px" data-act="addkidrow">+ עוד ילד</button></div>
-    <button class="btn primary block" type="submit">יוצאים לדרך</button>
-  </form></div>
-  <div class="welcome"><h2 style="font-size:1.2rem">בן/בת הזוג כבר הקים/ה את הלוח?</h2><p>בקשו לשלוח לכם את הלוח מההגדרות. אחר כך לחצו על הקישור שקיבלתם, או העתיקו את ההודעה ולחצו כאן.</p>
-  <button class="btn block" data-act="importask">קליטת לוח שקיבלתי</button></div>`;
+    <button class="btn primary block" type="submit" id="wSubmit">יוצאים לדרך</button>
+  </form></div>`;
+  const local=!CLOUD?`<div class="welcome"><h2 style="font-size:1.2rem">בן/בת הזוג כבר הקים/ה את הלוח?</h2><p>בקשו לשלוח לכם את הלוח מההגדרות. אחר כך לחצו על הקישור שקיבלתם, או העתיקו את ההודעה ולחצו כאן.</p>
+  <button class="btn block" data-act="importask">קליטת לוח שקיבלתי</button></div>`:'';
+  return `<header class="top"><div class="fam">ברוכים הבאים</div><h1>לוח המשפחה</h1></header>${join}${migrate}${create}${local}`;
 }
 const kidRow=i=>`<div style="display:flex;gap:8px;align-items:center"><span style="width:26px;height:26px;border-radius:50%;flex:none;background:${COLORS[i%COLORS.length]}"></span><input class="field wkid" id="wKid${i}" placeholder="שם הילד/ה" aria-label="ילד ${i+1}"></div>`;
 
@@ -585,7 +722,8 @@ function draw(){
   if(personAuto&&myId&&member(myId)){UI.person=myId;personAuto=false}
   if(UI.person&&!member(UI.person))UI.person='';
   const scroll=window.scrollY;
-  if(!S.members.length){app.innerHTML=viewWelcome();nav.hidden=true;fab.hidden=true;return}
+  if(UI.error){app.innerHTML=viewError();nav.hidden=true;fab.hidden=true;return}
+  if(CLOUD?!fid:!S.members.length){app.innerHTML=viewWelcome();nav.hidden=true;fab.hidden=true;return}
   nav.hidden=false;fab.hidden=false;
   const v=UI.view;
   const focusId=document.activeElement&&document.activeElement.id;
@@ -622,7 +760,7 @@ function taskSheet(t){
     ${kids().length?`<div><span class="lbl">לאיזה ילד זה קשור</span><div class="picks">${kids().map(k=>`<label class="pick kid" style="${cvars(k.color)}"><input type="checkbox" name="kids" value="${k.id}"${(t.kids||[]).includes(k.id)?' checked':''}><span><i></i>${esc(k.name)}</span></label>`).join('')}</div></div>`:''}
     <div><span class="lbl">מי מההורים אחראי/ת</span><div class="picks">${parents().map(p=>`<label class="pick" style="--c:${p.color}"><input type="checkbox" name="parents" value="${p.id}"${(t.parents||[]).includes(p.id)?' checked':''}><span><i></i>${esc(p.name)}</span></label>`).join('')}</div><div class="hint" style="margin-top:4px">בלי בחירה, המשימה תופיע אצל שני ההורים.</div></div>
     <label class="inline"><input type="checkbox" id="fNoDate" name="noDate"${t.date?'':' checked'}> בלי תאריך (משימה פתוחה)</label>
-    <label class="inline"><input type="checkbox" id="fPrivate" name="private"${t.private?' checked':''}> פרטי: נשאר רק בטלפון שלי ולא נשלח לבן/בת הזוג</label>
+    <label class="inline"><input type="checkbox" id="fPrivate" name="private"${t.private?' checked':''}> ${CLOUD?'פרטי: נשמר רק בטלפון שלי ולא מופיע אצל שאר המשפחה':'פרטי: נשאר רק בטלפון שלי ולא נשלח לבן/בת הזוג'}</label>
     <div id="dateBox" class="form">
       <div class="two"><div><label class="lbl" for="fDate">תאריך</label><input class="field" type="date" id="fDate" name="date" value="${t.date||today()}"></div>
       <div><label class="lbl" for="fTime">שעה</label><input class="field" type="time" id="fTime" name="time" value="${t.time||''}"></div></div>
@@ -711,7 +849,7 @@ function detailSheet(id,d){
     </div>
     <div class="actions" style="margin-top:8px">
       ${t.date?`<button class="btn" data-act="icstask" data-id="${t.id}">הוספה ליומן הטלפון</button>`:''}
-      ${parents().length>1&&!t.private?`<button class="btn" data-act="sendtask" data-id="${t.id}">שליחה לבן/בת הזוג</button>`:''}
+      ${!CLOUD&&parents().length>1&&!t.private?`<button class="btn" data-act="sendtask" data-id="${t.id}">שליחה לבן/בת הזוג</button>`:''}
     </div>
     <div id="delBox" style="margin-top:8px"><button class="btn danger block" data-act="delask" data-id="${t.id}">מחיקה${isRecurring(t)?' של כל הסדרה':''}</button></div>
     ${t.date?'<p class="hint">"הוספה ליומן הטלפון" שומרת את המשימה ביומן עם התראה בזמן שבחרתם, כך שתקבלו התראה גם כשהאפליקציה סגורה.</p>':''}`);
@@ -766,9 +904,9 @@ function settingsSheet(){
   </form>
   <div class="sec-h" style="margin-top:22px"><h2 style="font-family:var(--f-display);font-weight:400;font-size:1.15rem;margin:0">בני המשפחה</h2><button class="link" style="margin-inline-start:auto;background:none;border:0;color:var(--accent);font-weight:800" data-act="member">+ הוספה</button></div>
   ${ms.map(m=>`<div class="mem"><span class="sw" style="--c:${m.color}"></span><span class="n">${esc(m.name)}<small>${m.role==='child'?'ילד/ה':'הורה'}${m.email?' · '+esc(m.email):''}${m.id===myId?' · זה אני':''}</small></span><button class="btn" style="height:38px" data-act="member" data-id="${m.id}">עריכה</button></div>`).join('')}
-  <div class="set-sec"><h4>סנכרון עם בן/בת הזוג</h4>
+  ${CLOUD&&fid?inviteSection():`<div class="set-sec"><h4>סנכרון עם בן/בת הזוג</h4>
     <p class="hint">הלוח נשמר בטלפון הזה. כדי ששניכם תראו אותו דבר, שלחו עדכון בוואטסאפ. מי שמקבל לוחץ על הקישור, או מעתיק את ההודעה ובוחר "קליטת עדכון". כשפריט השתנה בשני הטלפונים, השינוי האחרון גובר.</p>
-    <div class="actions"><button class="btn primary" data-act="sendall">שליחת הלוח</button><button class="btn" data-act="importask">קליטת עדכון</button></div></div>
+    <div class="actions"><button class="btn primary" data-act="sendall">שליחת הלוח</button><button class="btn" data-act="importask">קליטת עדכון</button></div></div>`}
   <div class="set-sec"><h4>יומן הטלפון</h4>
     <p class="hint">הוספת המשימות ליומן של הטלפון, עם התראה בזמן שבחרתם בכל משימה. היומן מתריע גם כשהאפליקציה סגורה.</p>
     <div class="actions"><button class="btn" data-act="icsall">הוספת המשימות שלי ליומן</button></div></div>
@@ -784,7 +922,7 @@ function settingsSheet(){
       if(await putSettings({family:sh.querySelector('#sFam').value.trim(),remind:+sh.querySelector('#sRem').value})){closeSheet();toast('ההגדרות נשמרו')}});
   });
 }
-function memberSheet(id){
+function memberSheet(id,meDefault){
   const m=id?member(id):{name:'',role:'child',color:COLORS[S.members.length%COLORS.length],phone:'',email:''};
   const used=new Set(S.members.filter(x=>x.id!==id).map(x=>x.color));
   openSheet(`<h3>${id?'עריכת '+esc(m.name):'בן משפחה חדש'}</h3>
@@ -794,7 +932,7 @@ function memberSheet(id){
     <div><span class="lbl">צבע</span><div class="picks">${COLORS.map(c=>`<label class="pick sw" style="--c:${c}" title="${used.has(c)?'בשימוש':''}"><input type="radio" name="color" value="${c}"${c===m.color?' checked':''} aria-label="צבע ${c}${used.has(c)?' (בשימוש)':''}"><span>${used.has(c)?'<b style="color:'+inkOn(c)+';font-size:.7rem">•</b>':''}</span></label>`).join('')}</div></div>
     <div class="two"><div><label class="lbl" for="mPhone">טלפון (לוואטסאפ)</label><input class="field" id="mPhone" type="tel" inputmode="tel" value="${esc(m.phone||'')}" dir="ltr"></div>
     <div><label class="lbl" for="mEmail">מייל (לדוח הבוקר)</label><input class="field" id="mEmail" type="email" value="${esc(m.email||'')}" dir="ltr"></div></div>
-    <label class="inline"><input type="checkbox" id="mMe"${id&&id===myId?' checked':''}> זה אני (בטלפון הזה הלוח ייפתח על המשימות שלי)</label>
+    <label class="inline"><input type="checkbox" id="mMe"${(id&&id===myId)||meDefault?' checked':''}> זה אני (בטלפון הזה הלוח ייפתח על המשימות שלי)</label>
     <button class="btn primary block" type="submit">שמירה</button>
     ${id?`<div id="delBox"><button type="button" class="btn danger block" data-act="memdelask" data-id="${id}">הסרה מהמשפחה</button></div>`:''}
   </form>`,sh=>{
@@ -802,7 +940,7 @@ function memberSheet(id){
       const me=sh.querySelector('#mMe');const nid=id||newId('members');
       const obj={name:f.mName.value.trim(),role:f.role.value,color:f.color.value||m.color,phone:f.mPhone.value.trim(),email:f.mEmail.value.trim(),order:m.order??Date.now()};
       if(!obj.name)return;
-      if(me){if(me.checked){myId=nid;lsSet('me',nid)}else if(myId===nid){myId='';lsSet('me','')}}
+      if(me){if(me.checked)linkMe(nid);else if(myId===nid)linkMe('')}
       if(await put('members',nid,obj)){if(me&&me.checked){UI.person=nid;lsSet('person',nid)}settingsSheet();toast('נשמר')}});
   });
 }
@@ -843,7 +981,7 @@ const ACT={
   month(el){const d=pd(UI.calMonth);d.setMonth(d.getMonth()+ +el.dataset.n);UI.calMonth=ymd(d);draw()},
   fab(){if(UI.view==='shop'){const i=document.getElementById('shopInput');i&&i.focus()}else if(UI.view==='contacts')contactSheet();else taskSheet()},
   settings(){settingsSheet()},
-  member(el){memberSheet(el.dataset.id)},
+  member(el){memberSheet(el.dataset.id,el.dataset.me)},
   memdelask(el){confirmBox('delBox','להסיר מהמשפחה? המשימות יישארו.','memdel',el.dataset.id)},
   async memdel(el){if(await del('members',el.dataset.id)){settingsSheet();toast('הוסר')}},
   contact(el){contactSheet(el.dataset.id)},
@@ -877,7 +1015,7 @@ const ACT={
       <div class="actions" style="margin-top:12px"><button class="btn primary" data-act="importgo">המשך</button></div>`);
   },
   importgo(){const c=findCode(document.getElementById('importText').value);if(!c){toast('לא נמצא עדכון בטקסט. ודאו שהדבקתם את כל ההודעה, כולל הקישור.');return}importCode(c)},
-  doimport(){if(!pendingImport)return;const n=merge(pendingImport);pendingImport=null;closeSheet();toast(n?`נקלטו ${n} שינויים`:'הלוח כבר מעודכן')},
+  doimport(){if(!pendingImport)return;const n=CLOUD?mergeCloud(pendingImport):merge(pendingImport);pendingImport=null;closeSheet();toast(n?`נקלטו ${n} שינויים`:'הלוח כבר מעודכן')},
   icstask(el){const t=S.tasks.find(x=>x.id===el.dataset.id);if(t)saveFile((t.title||'event').replace(/[\\/:*?"<>|]/g,'')+'.ics',icsFile(vevent(t)),'text/calendar')},
   icsall(){
     const pid=myId&&member(myId)?myId:UI.person;const t0=today();
@@ -890,6 +1028,26 @@ const ACT={
   async notifon(){try{const r=await Notification.requestPermission();toast(r==='granted'?'ההתראות הופעלו':'ההתראות לא אושרו. אפשר להפעיל אותן בהגדרות הטלפון.')}catch(e){}settingsSheet()},
   reptime(){const v=document.getElementById('sRepTime').value;if(v){putSettings({reportTime:v});toast('שעת הדוח נשמרה')}},
   backup(){saveFile('family-board-backup-'+today()+'.json',JSON.stringify({v:1,k:'all',members:S.members,tasks:S.tasks,shopping:S.shopping,contacts:S.contacts,settings:S.settings,deleted:S.deleted}),'application/json')},
+  iam(el){linkMe(el.dataset.id);closeSheet();render();toast('מעולה! הלוח ייפתח אצלך על המשימות שלך.')},
+  who(){whoSheet()},
+  async invite(){const n=S.settings.family?' של משפחת '+S.settings.family:'';
+    await shareText(`הצטרפו ללוח המשפחה${n}.\nפותחים את הקישור:\n${APP_URL}#join=${famCode}\n\nאו פותחים את ${APP_URL} ומקלידים את הקוד: ${famCode}`)},
+  async qr(){
+    openSheet(`<h3>סריקה להצטרפות</h3><p class="hint">מכוונים את המצלמה של הטלפון השני לקוד, ולוחצים על הקישור שמופיע.</p><div class="qr-box"><div id="qrEl"></div><span class="code" dir="ltr">${esc(famCode)}</span></div>`);
+    try{if(!window.QRCode)await loadScript('https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js');new QRCode(document.getElementById('qrEl'),{text:APP_URL+'#join='+famCode,width:220,height:220,colorDark:'#000000',colorLight:'#ffffff'})}
+    catch(e){toast('לא הצלחתי ליצור קוד QR. אפשר לשלוח הזמנה במקום.')}
+  },
+  async newcode(){const old=famCode,code=newCode();
+    try{await fdb.collection('invites').doc(code).set({familyId:fid});await famRef().update({code});if(old)fdb.collection('invites').doc(old).delete().catch(()=>{});toast('נוצר קוד חדש. הקוד הקודם כבר לא יעבוד.');settingsSheet()}
+    catch(e){toast('לא הצלחתי ליצור קוד חדש. בדקו את החיבור לאינטרנט.')}},
+  kick(el){cw(fcol('users').doc(el.dataset.id).delete());toast('המכשיר נותק מהלוח')},
+  leaveask(){const b=document.getElementById('leaveBox');b.innerHTML=`<div class="confirm"><span style="flex:1">לצאת מלוח המשפחה בטלפון הזה? אפשר לחזור עם קוד ההזמנה.</span><button class="btn danger" data-act="leave">יציאה</button><button class="btn" data-act="leavecancel">ביטול</button></div>`},
+  leavecancel(){document.getElementById('leaveBox').innerHTML=''},
+  async leave(){try{await fcol('users').doc(uid).delete();await fdb.collection('userIndex').doc(uid).delete()}catch(e){}closeSheet();leaveLocal();toast('יצאת מלוח המשפחה')},
+  joinopen(){joinSheet('')},
+  async migrate(el){el.disabled=true;el.textContent='מעביר את הלוח…';
+    try{const ld=localData;const meId=member(myId)?myId:(ld.members.some(m=>m.id===lsGet('me'))?lsGet('me'):'');await createFamily(ld.settings.family||'',ld);if(meId)setTimeout(()=>linkMe(meId),1500);toast('הלוח עבר לענן. עכשיו אפשר להזמין את המשפחה מההגדרות.')}
+    catch(e){console.warn(e);el.disabled=false;el.textContent='הפיכה ללוח משותף';toast('ההעברה לא הצליחה. בדקו את החיבור לאינטרנט ונסו שוב.')}},
   addkidrow(){const w=document.getElementById('wKids');const n=w.children.length;w.insertAdjacentHTML('beforeend',kidRow(n));document.getElementById('wKid'+n).focus()}
 };
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el)return;const fn=ACT[el.dataset.act];if(fn)fn(el,e)});
@@ -898,15 +1056,22 @@ document.addEventListener('submit',async e=>{
     const names=i.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);if(!names.length)return;i.value='';
     for(const n of names)await put('shopping',newId('shopping'),{name:n,store:st,done:false,createdAt:Date.now()});
     document.getElementById('shopInput')?.focus()}
+  if(e.target.id==='joinForm'||e.target.id==='joinForm2'){e.preventDefault();const i=e.target.querySelector('input');const b=e.target.querySelector('button');b.disabled=true;await joinFamily(i.value);b.disabled=false}
   if(e.target.id==='welcomeForm'){e.preventDefault();
     const fam=document.getElementById('wFam').value.trim();
     const ps=['wP1','wP2'].map(i=>document.getElementById(i).value.trim()).filter(Boolean);
     const ks=[...document.querySelectorAll('.wkid')].map(i=>i.value.trim()).filter(Boolean);
     if(!ps.length&&!ks.length){toast('הוסיפו לפחות שם אחד');return}
-    const pc=PARENT_COLORS;let o=1;
+    let o=1;const now=Date.now();
+    const ms=ps.map((n,i)=>({id:newId(),name:n,role:'parent',color:PARENT_COLORS[i],phone:'',email:'',order:o++,updatedAt:now}))
+      .concat(ks.map((n,i)=>({id:newId(),name:n,role:'child',color:COLORS[i%COLORS.length],phone:'',email:'',order:o++,updatedAt:now})));
+    if(CLOUD){
+      const b=document.getElementById('wSubmit');b.disabled=true;b.textContent='יוצרים את הלוח…';
+      try{await createFamily(fam,{members:ms,settings:{remind:60}});toast('הלוח מוכן! מההגדרות אפשר להזמין את בני המשפחה.')}
+      catch(x){console.warn(x);b.disabled=false;b.textContent='יוצאים לדרך';toast('לא הצלחתי ליצור את הלוח. בדקו את החיבור לאינטרנט ונסו שוב.')}
+      return}
     await putSettings({family:fam,remind:60});
-    for(let i=0;i<ps.length;i++)await put('members',newId('members'),{name:ps[i],role:'parent',color:pc[i],phone:'',email:'',order:o++});
-    for(let i=0;i<ks.length;i++)await put('members',newId('members'),{name:ks[i],role:'child',color:COLORS[i%COLORS.length],phone:'',email:'',order:o++});
+    ms.forEach(m=>put('members',m.id,m));
     toast('הלוח מוכן! עכשיו אפשר להוסיף חוגים, תורים ואירועים.')}
 });
 document.addEventListener('change',e=>{
@@ -920,6 +1085,7 @@ function handleHash(){
   const h=location.hash;if(!h||h==='#')return;
   history.replaceState(null,'',APP_URL);
   let m;
+  if((m=h.match(/^#join=([A-Za-z0-9]+)/))){if(CLOUD)joinSheet(m[1].toUpperCase());return}
   if((m=h.match(/^#(?:add|sync)=([0-9A-Za-z_-]+)/)))importCode(m[1]);
   else if((m=h.match(/^#report(?:=([\w-]+))?/))&&S.members.length){UI.reportDay=0;reportSheet(m[1]&&member(m[1])?m[1]:'')}
   else if(h==='#new'&&S.members.length)taskSheet();
@@ -930,7 +1096,7 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 setInterval(tick,60000);
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
 connect();
-setTimeout(()=>{if(location.hash)handleHash();else morningCheck();notifyDue()},80);
+if(!CLOUD)setTimeout(()=>{if(location.hash)handleHash();else morningCheck();notifyDue()},80);
 </script>
 </body>
 </html>
