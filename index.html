@@ -220,6 +220,12 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 .ics-row>span{display:flex;flex-direction:column;gap:3px;min-width:0}
 .ics-row b{overflow-wrap:anywhere}
 .ics-row small{color:var(--muted)}
+.alarm{text-align:center;padding:8px 0 4px;display:flex;flex-direction:column;align-items:center;gap:10px}
+.alarm-ic{width:72px;height:72px;border-radius:50%;background:var(--warn-bg);color:var(--warn);display:grid;place-items:center}
+.alarm-ic svg{width:36px;height:36px}
+.alarm h3{margin:0;font-size:1.5rem}
+.alarm p{margin:0;color:var(--muted);font-weight:700}
+@media (prefers-reduced-motion:no-preference){.alarm-ic{animation:ringing 1s ease-in-out infinite}@keyframes ringing{0%,100%{transform:rotate(0)}20%{transform:rotate(-14deg)}40%{transform:rotate(12deg)}60%{transform:rotate(-8deg)}80%{transform:rotate(4deg)}}}
 .vprev{margin-top:12px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:4px 14px}
 .vprev .detail-row:last-child{border-bottom:0}
 .toast{position:fixed;z-index:30;bottom:calc(150px + env(safe-area-inset-bottom,0px));inset-inline:16px;max-width:480px;margin:0 auto;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-weight:700;box-shadow:var(--shadow)}
@@ -312,6 +318,7 @@ const I={
 I.week='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>';
 
 I.mic='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg>';
+I.bell='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>';
 /* ---------- state ---------- */
 const S={members:[],tasks:[],shopping:[],contacts:[],settings:{}};
 const UI={view:lsGet('view')||'today',person:lsGet('person'),calMonth:null,calDay:null,loaded:false,reportDay:0,shopStore:'סופר'};
@@ -600,7 +607,7 @@ function vevent(t){
   const desc=[ks.length?'ילדים: '+ks.join(', '):'',ps.length?'אחראים: '+ps.join(', '):'',t.notes||''].filter(Boolean).join('\n');
   if(desc)L.push('DESCRIPTION:'+icsEsc(desc));
   if(t.location)L.push('LOCATION:'+icsEsc(t.location));
-  if(t.remind){const m=t.time?-t.remind:(t.remind>=1440?-(t.remind-480):480);L.push('BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+icsEsc(t.title),'TRIGGER:'+(m<0?'-':'')+'PT'+Math.abs(m)+'M','END:VALARM')}
+  if(t.remind){const m=t.time?-t.remind:(t.remind>=1440?-(t.remind-480):480);const tr='TRIGGER:'+(m<0?'-':'')+'PT'+Math.abs(m)+'M';L.push('BEGIN:VALARM','ACTION:DISPLAY','DESCRIPTION:'+icsEsc(t.title),tr,'END:VALARM');if(beepMode()!=='off')L.push('BEGIN:VALARM','ACTION:AUDIO',tr,'END:VALARM')}
   L.push('END:VEVENT');return L;
 }
 function reportEvent(pid){
@@ -616,15 +623,55 @@ function saveFile(name,text,type){
 }
 
 /* ---------- notifications while the app is open or in the background ---------- */
+/* ---------- beep sound for reminders ---------- */
+const BEEPS=[['off','ללא צליל'],['short','צפצוף קצר'],['triple','שלושה צפצופים'],['ring','צלצול חוזר עד שמאשרים']];
+const beepMode=()=>lsGet('beep')||'triple';
+let actx=null,ringTimer=null;
+function audioCtx(){
+  if(!actx){const C=window.AudioContext||window.webkitAudioContext;if(!C)return null;try{actx=new C()}catch(e){return null}}
+  if(actx.state==='suspended')actx.resume().catch(()=>{});
+  return actx;
+}
+// Phones only allow sound after a tap, so the first tap anywhere unlocks it.
+['pointerdown','keydown'].forEach(ev=>document.addEventListener(ev,()=>{const c=audioCtx();if(c&&c.state!=='running')c.resume().catch(()=>{})},{passive:true}));
+function tone(at,freq,len){
+  const c=actx,o=c.createOscillator(),g=c.createGain();
+  o.type='square';o.frequency.setValueAtTime(freq,at);
+  g.gain.setValueAtTime(0.0001,at);g.gain.exponentialRampToValueAtTime(0.35,at+0.01);g.gain.setValueAtTime(0.35,at+len-0.03);g.gain.exponentialRampToValueAtTime(0.0001,at+len);
+  o.connect(g);g.connect(c.destination);o.start(at);o.stop(at+len+0.02);
+}
+function playBeep(mode){
+  const c=audioCtx();if(!c||mode==='off')return;const t=c.currentTime+0.05;
+  if(mode==='short')tone(t,1046,0.22);
+  else if(mode==='triple')[0,0.32,0.64].forEach(d=>tone(t+d,1046,0.2));
+  else [0,0.18,0.36,0.54].forEach((d,i)=>tone(t+d,i%2?784:1046,0.15));
+  try{navigator.vibrate&&navigator.vibrate(mode==='short'?250:[250,120,250,120,250])}catch(e){}
+}
+function stopRinging(){if(ringTimer){clearInterval(ringTimer);ringTimer=null}}
+function startRinging(){stopRinging();playBeep('ring');let n=0;ringTimer=setInterval(()=>{if(++n>=30||document.visibilityState!=='visible'){stopRinging();return}playBeep('ring')},2000)}
+function alarmSheet(a){
+  const kidsTxt=(a.t.kids||[]).map(member).filter(Boolean).map(k=>k.name).join(', ');
+  openSheet(`<div class="alarm"><div class="alarm-ic">${I.bell}</div><h3>${esc(a.t.title)}</h3>
+    <p>${a.t.time?(a.d===today()?'היום ':dateLong(a.d)+' ')+'ב-'+a.t.time:dateLong(a.d)}${a.t.location?' · '+esc(a.t.location):''}${kidsTxt?' · '+esc(kidsTxt):''}</p>
+    <button class="btn primary block" data-act="alarmok">אישור</button></div>`);
+}
+
+/* ---------- reminders while the app is open or in the background ---------- */
 function notifyDue(){
-  if(!('Notification' in window)||Notification.permission!=='granted')return;
   let sent={};try{sent=JSON.parse(lsGet('notified')||'{}')}catch(e){}
-  const now=Date.now();
-  dueAlerts(myId&&member(myId)?myId:'').forEach(a=>{const k=a.t.id+'@'+a.d;if(sent[k])return;sent[k]=now;
+  const now=Date.now(),visible=document.visibilityState==='visible',mode=beepMode();
+  const canNotify='Notification' in window&&Notification.permission==='granted';
+  const fresh=[];
+  dueAlerts(myId&&member(myId)?myId:'').forEach(a=>{const k=a.t.id+'@'+a.d;if(sent[k])return;sent[k]=now;fresh.push(a);
+    if(!canNotify)return;
     const body=[a.t.time?(a.d===today()?'היום ':dateLong(a.d)+' ')+'ב-'+a.t.time:dateLong(a.d),a.t.location,(a.t.kids||[]).map(member).filter(Boolean).map(k=>k.name).join(', ')].filter(Boolean).join(' · ');
-    const opts={body,tag:k,lang:'he',dir:'rtl',icon:'icons/icon-192.png',badge:'icons/icon-192.png',data:{url:APP_URL}};
+    const opts={body,tag:k,lang:'he',dir:'rtl',icon:'icons/icon-192.png',badge:'icons/icon-192.png',data:{url:APP_URL},silent:mode==='off',renotify:true,requireInteraction:mode==='ring',vibrate:mode==='off'?undefined:[250,120,250,120,250]};
     (navigator.serviceWorker?navigator.serviceWorker.ready.then(r=>r.showNotification(a.t.title,opts)):Promise.reject()).catch(()=>{try{new Notification(a.t.title,opts)}catch(e){}});
   });
+  if(fresh.length&&visible&&mode!=='off'){
+    if(mode==='ring')startRinging();else playBeep(mode);
+    if(!document.getElementById('sheetRoot').innerHTML)alarmSheet(fresh[0]);else toast('תזכורת: '+fresh[0].t.title);
+  }
   for(const k in sent)if(now-sent[k]>8*864e5)delete sent[k];
   lsSet('notified',JSON.stringify(sent));
 }
@@ -1250,7 +1297,7 @@ function openSheet(html,onMount){
   onMount&&onMount(r.querySelector('.sheet'));
   if(f&&!('ontouchstart' in window))f.focus();
 }
-function closeSheet(){if(rec){try{rec.abort()}catch(e){}rec=null}document.getElementById('sheetRoot').innerHTML='';document.body.style.overflow=''}
+function closeSheet(){stopRinging();if(rec){try{rec.abort()}catch(e){}rec=null}document.getElementById('sheetRoot').innerHTML='';document.body.style.overflow=''}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSheet()});
 
 /* ---------- task editor ---------- */
@@ -1418,7 +1465,10 @@ function settingsSheet(){
     <div class="actions"><button class="btn" data-act="icsall">הוספת המשימות שלי ליומן</button><button class="btn" data-act="icshelp">ייבוא מהיומן ללוח</button></div></div>
   <div class="set-sec"><h4>התראות</h4>
     <p class="hint">${!('Notification' in window)?'הדפדפן הזה לא תומך בהתראות. באייפון צריך קודם להוסיף את האפליקציה למסך הבית.':Notification.permission==='granted'?'ההתראות פעילות כשהאפליקציה פתוחה או ברקע. כדי לקבל התראה גם כשהיא סגורה לגמרי, הוסיפו את המשימות ליומן הטלפון.':'התראה לפני כל משימה, כשהאפליקציה פתוחה או ברקע.'}</p>
-    ${'Notification' in window&&Notification.permission!=='granted'?'<div class="actions"><button class="btn" data-act="notifon">הפעלת התראות</button></div>':''}</div>
+    ${'Notification' in window&&Notification.permission!=='granted'?'<div class="actions"><button class="btn" data-act="notifon">הפעלת התראות</button></div>':''}
+    <label class="lbl" for="sBeep" style="margin:6px 0 0">צליל התראה בטלפון הזה</label>
+    <div class="two"><select class="field" id="sBeep">${BEEPS.map(([k,l])=>`<option value="${k}"${beepMode()===k?' selected':''}>${l}</option>`).join('')}</select><button class="btn" data-act="beeptest">השמעת דוגמה</button></div>
+    <p class="hint">הצפצוף נשמע כשהאפליקציה פתוחה. כשהיא ברקע או סגורה, הטלפון מצלצל בצליל ההתראות שלו, ובמשימות שהוספתם ליומן הטלפון גם היומן מצלצל.</p></div>
   <div class="set-sec"><h4>שעת דוח הבוקר</h4>
     <div class="two"><input class="field" type="time" id="sRepTime" value="${esc(S.settings.reportTime||'06:00')}" aria-label="שעת דוח הבוקר"><button class="btn" data-act="reptime">שמירה</button></div></div>
   <div class="set-sec"><h4>גיבוי</h4>
@@ -1563,6 +1613,8 @@ const ACT={
   async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
   sharefriends(){shareText(`לוח המשפחה: אפליקציה חינמית לניהול חוגים, תורים, אירועים וקניות של כל המשפחה, עם צבע לכל ילד, דוח בוקר ודוח שבועי, והוספת משימות בקול.\nכל ההסבר והקישור לאפליקציה כאן:\n${new URL('about.html',APP_URL).href}`)},
   icshelp(){icsHelpSheet()},
+  beeptest(){const v=document.getElementById('sBeep').value;lsSet('beep',v);if(v==='off'){toast('הצליל כבוי');return}if(v==='ring'){startRinging();setTimeout(stopRinging,4200)}else playBeep(v)},
+  alarmok(){stopRinging();closeSheet()},
   gcal(el){gcalConnect(el)},
   gcalfetch(){gcalFetch()},
   icsall2(el){document.querySelectorAll('.icsCb').forEach(c=>c.checked=el.dataset.v==='1')},
@@ -1603,7 +1655,7 @@ document.addEventListener('submit',async e=>{
     ms.forEach(m=>put('members',m.id,m));
     toast('הלוח מוכן! עכשיו אפשר להוסיף חוגים, תורים ואירועים.')}
 });
-document.addEventListener('change',e=>{if(e.target.id==='icsFile'&&e.target.files[0]){readCalendarFile(e.target.files[0]);return}
+document.addEventListener('change',e=>{if(e.target.id==='sBeep'){lsSet('beep',e.target.value);toast('צליל ההתראה נשמר');return}if(e.target.id==='icsFile'&&e.target.files[0]){readCalendarFile(e.target.files[0]);return}
   if(e.target.id!=='restoreFile'||!e.target.files[0])return;
   const fr=new FileReader();
   fr.onload=()=>{try{const o=JSON.parse(fr.result);if(!o||!Array.isArray(o.tasks))throw 0;pendingImport=o;closeSheet();importCodeObj(o)}catch(x){toast('הקובץ לא נראה כמו גיבוי של לוח המשפחה.')}};
@@ -1623,6 +1675,7 @@ function tick(){if(!document.getElementById('sheetRoot').innerHTML)render();noti
 window.addEventListener('hashchange',handleHash);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')tick()});
 setInterval(tick,60000);
+setInterval(()=>{if(UI.loaded)notifyDue()},20000);
 if('serviceWorker' in navigator&&location.protocol!=='file:')navigator.serviceWorker.register('sw.js').catch(()=>{});
 connect();
 if(!CLOUD)setTimeout(()=>{if(location.hash)handleHash();else morningCheck();notifyDue()},80);
