@@ -754,7 +754,7 @@ function viewWelcome(){
   </form></div>`;
   const local=!CLOUD?`<div class="welcome"><h2 style="font-size:1.2rem">בן/בת הזוג כבר הקים/ה את הלוח?</h2><p>בקשו לשלוח לכם את הלוח מההגדרות. אחר כך לחצו על הקישור שקיבלתם, או העתיקו את ההודעה ולחצו כאן.</p>
   <button class="btn block" data-act="importask">קליטת לוח שקיבלתי</button></div>`:'';
-  return `<header class="top"><div class="fam">ברוכים הבאים</div><h1>לוח המשפחה</h1></header>${join}${migrate}${create}${local}`;
+  return `<header class="top"><div class="fam">ברוכים הבאים</div><h1>לוח המשפחה</h1></header>${join}${migrate}${create}${local}<p class="hint" style="text-align:center;margin-top:16px"><a href="about.html" style="color:var(--accent);font-weight:800">מה האפליקציה יודעת לעשות?</a></p>`;
 }
 const kidRow=i=>`<div style="display:flex;gap:8px;align-items:center"><span style="width:26px;height:26px;border-radius:50%;flex:none;background:${COLORS[i%COLORS.length]}"></span><input class="field wkid" id="wKid${i}" placeholder="שם הילד/ה" aria-label="ילד ${i+1}"></div>`;
 
@@ -1343,7 +1343,7 @@ const ACT={
   wk(el){const n=+el.dataset.n;UI.weekStart=n?addDays(UI.weekStart||weekStartOf(today()),7*n):weekStartOf(today());draw();window.scrollTo(0,0)},
   weekshare(){shareText(weekText())},
   async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
-  sharefriends(){shareText(`לוח המשפחה: אפליקציה חינמית לניהול חוגים, תורים, אירועים וקניות של כל המשפחה, עם צבע לכל ילד, דוח בוקר ודוח שבועי, והוספת משימות בקול.\nפותחים את הקישור ומקימים לוח למשפחה שלכם:\n${APP_URL}`)},
+  sharefriends(){shareText(`לוח המשפחה: אפליקציה חינמית לניהול חוגים, תורים, אירועים וקניות של כל המשפחה, עם צבע לכל ילד, דוח בוקר ודוח שבועי, והוספת משימות בקול.\nכל ההסבר והקישור לאפליקציה כאן:\n${new URL('about.html',APP_URL).href}`)},
   voice(){voiceSheet()},
   mic(){startMic()},
   voicesave(){
