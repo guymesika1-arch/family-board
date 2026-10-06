@@ -213,6 +213,13 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 .mic.on{background:var(--warn);color:#fff}
 @media (prefers-reduced-motion:no-preference){.mic.on{animation:micpulse 1.2s ease-out infinite}@keyframes micpulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--warn) 55%,transparent)}100%{box-shadow:0 0 0 20px transparent}}}
 .mic-state{text-align:center;font-weight:700;color:var(--muted);margin-bottom:12px;min-height:1.4em}
+.ics-list{max-height:46vh;overflow-y:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+.ics-row{display:flex;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);align-items:flex-start;cursor:pointer}
+.ics-row:last-child{border-bottom:0}
+.ics-row input{width:20px;height:20px;flex:none;margin-top:2px}
+.ics-row>span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.ics-row b{overflow-wrap:anywhere}
+.ics-row small{color:var(--muted)}
 .vprev{margin-top:12px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:4px 14px}
 .vprev .detail-row:last-child{border-bottom:0}
 .toast{position:fixed;z-index:30;bottom:calc(150px + env(safe-area-inset-bottom,0px));inset-inline:16px;max-width:480px;margin:0 auto;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-weight:700;box-shadow:var(--shadow)}
@@ -1003,6 +1010,127 @@ function startMic(){
   try{rec.start();setMicUI(true)}catch(e){rec=null;setMicUI(false,'לא הצלחתי להפעיל את המיקרופון. אפשר להקליד.')}
 }
 
+/* ---------- import from a phone/Google/Outlook calendar file (.ics / .zip) ---------- */
+const icsUnesc=s=>String(s||'').replace(/\\n/gi,'\n').replace(/\\,/g,',').replace(/\\;/g,';').replace(/\\\\/g,'\\').trim();
+function parseICS(text){
+  const lines=String(text).replace(/\r\n[ \t]/g,'').replace(/\n[ \t]/g,'').split(/\r?\n/);
+  const evs=[];let cur=null,inAlarm=false;
+  for(const ln of lines){
+    if(/^BEGIN:VEVENT/i.test(ln)){cur={EXDATE:[],ALARMS:[]};continue}
+    if(/^END:VEVENT/i.test(ln)){if(cur)evs.push(cur);cur=null;continue}
+    if(!cur)continue;
+    if(/^BEGIN:VALARM/i.test(ln)){inAlarm=true;continue}
+    if(/^END:VALARM/i.test(ln)){inAlarm=false;continue}
+    const m=ln.match(/^([A-Za-z0-9-]+)((?:;[^:;]+=(?:"[^"]*"|[^:;]*))*):(.*)$/);if(!m)continue;
+    const N=m[1].toUpperCase(),P={};(m[2].match(/;[^:;]+=(?:"[^"]*"|[^:;]*)/g)||[]).forEach(x=>{const i=x.indexOf('=');P[x.slice(1,i).toUpperCase()]=x.slice(i+1).replace(/^"|"$/g,'')});
+    if(inAlarm){if(N==='TRIGGER')cur.ALARMS.push({v:m[3],P});continue}
+    if(N==='EXDATE')m[3].split(',').forEach(v=>cur.EXDATE.push({v,P}));
+    else if(!(N in cur))cur[N]={v:m[3],P};
+  }
+  return evs;
+}
+function tzOffsetMin(tz,utcMs){try{const f=new Intl.DateTimeFormat('en-US',{timeZone:tz,hourCycle:'h23',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const o={};f.formatToParts(new Date(utcMs)).forEach(p=>o[p.type]=p.value);return (Date.UTC(+o.year,+o.month-1,+o.day,+o.hour%24,+o.minute,+o.second)-utcMs)/60000}catch(e){return null}}
+// -> {date:'YYYY-MM-DD', time:'HH:MM'|'' , ms}
+function icsWhen(x){
+  if(!x)return null;const v=x.v.trim(),P=x.P||{};
+  let m=v.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if(m||P.VALUE==='DATE'){m=m||v.match(/^(\d{4})(\d{2})(\d{2})/);const d=new Date(+m[1],+m[2]-1,+m[3]);return {date:ymd(d),time:'',ms:d.getTime()}}
+  m=v.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/);if(!m)return null;
+  const wall=Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+(m[6]||0));let d;
+  if(m[7])d=new Date(wall);
+  else if(P.TZID){const off=tzOffsetMin(P.TZID,wall);d=off==null?new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]):new Date(wall-off*60000);const off2=off==null?null:tzOffsetMin(P.TZID,d.getTime());if(off2!=null&&off2!==off)d=new Date(wall-off2*60000)}
+  else d=new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5]);
+  return {date:ymd(d),time:pad(d.getHours())+':'+pad(d.getMinutes()),ms:d.getTime()};
+}
+function isoDurMin(v){const m=String(v||'').match(/^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);if(!m)return null;
+  const n=((+m[2]||0)*7*1440)+((+m[3]||0)*1440)+((+m[4]||0)*60)+(+m[5]||0);return m[1]==='-'?-n:n}
+function icsToTask(ev){
+  const st=icsWhen(ev.DTSTART);if(!st)return null;
+  if(ev.STATUS&&/CANCELLED/i.test(ev.STATUS.v))return null;
+  const uid=ev.UID?ev.UID.v.trim():'';
+  if(/@family-board$/.test(uid))return null; // our own export
+  const title=icsUnesc(ev.SUMMARY&&ev.SUMMARY.v)||'אירוע מהיומן';
+  let dur=0;
+  if(st.time){const en=icsWhen(ev.DTEND);if(en&&en.ms>st.ms)dur=Math.round((en.ms-st.ms)/60000);else if(ev.DURATION){const d=isoDurMin(ev.DURATION.v);if(d>0)dur=d}if(!dur)dur=60;if(dur>1440)dur=1440}
+  const t={title,cat:'אחר',date:st.date,time:st.time,dur,recur:'none',days:[],until:'',kids:[],parents:[],remind:0,location:icsUnesc(ev.LOCATION&&ev.LOCATION.v),notes:icsUnesc(ev.DESCRIPTION&&ev.DESCRIPTION.v).slice(0,1500),icsUid:uid,skip:[]};
+  // recurrence
+  if(ev.RRULE){
+    const R={};ev.RRULE.v.split(';').forEach(p=>{const [k,v]=p.split('=');R[k.toUpperCase()]=v});
+    const iv=+(R.INTERVAL||1),F=R.FREQ;
+    if(F==='DAILY'&&iv===1)t.recur='daily';
+    else if(F==='WEEKLY'&&iv<=2){t.recur=iv===2?'biweekly':'weekly';const map={SU:0,MO:1,TU:2,WE:3,TH:4,FR:5,SA:6};t.days=(R.BYDAY||'').split(',').map(x=>map[x.replace(/^[+-]?\d+/,'')]).filter(x=>x!=null);if(!t.days.length)t.days=[pd(t.date).getDay()]}
+    else if(F==='MONTHLY'&&iv===1)t.recur='monthly';
+    else if(F==='YEARLY'&&iv===1)t.recur='yearly';
+    if(t.recur!=='none'){
+      if(R.UNTIL){const u=icsWhen({v:R.UNTIL,P:{}});if(u)t.until=u.date}
+      else if(R.COUNT){const c=+R.COUNT;const step={daily:1,weekly:7,biweekly:14}[t.recur];
+        t.until=step?addDays(t.date,Math.ceil(c/Math.max(1,t.days.length||1))*step-1):(()=>{const d=pd(t.date);t.recur==='monthly'?d.setMonth(d.getMonth()+c-1):d.setFullYear(d.getFullYear()+c-1);return ymd(d)})()}
+      ev.EXDATE.forEach(x=>{const w=icsWhen(x);if(w)t.skip.push(w.date)});
+    }else t.notes=(t.notes?t.notes+'\n':'')+'(חזרה מהיומן שלא נתמכת: '+ev.RRULE.v+')';
+  }
+  // reminder
+  const al=ev.ALARMS.find(a=>!a.P.RELATED||a.P.RELATED==='START');
+  if(al){const d=isoDurMin(al.v);if(d!=null&&d<=0)t.remind=-d;else if(/^\d{8}T/.test(al.v)){const w=icsWhen({v:al.v,P:{}});if(w)t.remind=Math.max(0,Math.round((st.ms-w.ms)/60000))}}
+  // kids / parents named in the title, and a category
+  const p=parseVoice(title,{me:'',members:S.members});
+  if(p.kind==='task'){t.kids=p.task.kids;t.parents=p.task.parents;t.cat=p.task.cat}
+  for(const [c,re] of V_CATS)if(re.test(title)){t.cat=c;break}
+  return t;
+}
+function icsActive(t,t0){return t.recur==='none'?t.date>=t0:(!t.until||t.until>=t0)}
+let icsPending=[];
+async function readCalendarFile(file){
+  let texts=[];
+  if(/\.zip$/i.test(file.name)||file.type==='application/zip'){
+    try{if(!window.JSZip)await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js');
+      const z=await JSZip.loadAsync(file);for(const n of Object.keys(z.files))if(/\.ics$/i.test(n))texts.push(await z.files[n].async('string'))}
+    catch(e){toast('לא הצלחתי לפתוח את קובץ ה-zip.');return}
+  }else texts=[await file.text()];
+  const all=texts.flatMap(parseICS).map(icsToTask).filter(Boolean);
+  if(!all.length){toast('לא נמצאו אירועים בקובץ. ודאו שבחרתם קובץ יומן (.ics).');return}
+  // keep one entry per UID (recurring exceptions share the UID)
+  const seen=new Set();icsPending=all.filter(t=>{if(!t.icsUid)return true;if(seen.has(t.icsUid))return false;seen.add(t.icsUid);return true});
+  icsSheet(false);
+}
+function icsSheet(showPast){
+  const t0=today(),list=icsPending.map((t,i)=>({t,i})).filter(o=>showPast||icsActive(o.t,t0)).sort((a,b)=>(a.t.date+a.t.time).localeCompare(b.t.date+b.t.time));
+  const past=icsPending.length-icsPending.filter(t=>icsActive(t,t0)).length;
+  const byUid=new Map(S.tasks.filter(x=>x.icsUid).map(x=>[x.icsUid,x]));
+  const shown=list.slice(0,400);
+  openSheet(`<h3>ייבוא מהיומן</h3>
+    <p class="hint">נמצאו ${icsPending.length} אירועים${past?`, מתוכם ${past} שכבר עברו`:''}. סמנו מה להכניס ללוח. אירוע שכבר יובא בעבר יתעדכן ולא ייכנס פעמיים.</p>
+    <div class="actions" style="margin:10px 0"><button class="btn" data-act="icsall2" data-v="1">סימון הכל</button><button class="btn" data-act="icsall2" data-v="0">ניקוי</button>${past?`<button class="btn" data-act="icspast" data-v="${showPast?0:1}">${showPast?'בלי אירועים שעברו':'להציג גם שעברו'}</button>`:''}</div>
+    <div class="ics-list">${shown.map(({t,i})=>`<label class="ics-row"><input type="checkbox" class="icsCb" value="${i}" checked><span><b>${esc(t.title)}</b><small>${dateShort(t.date)} ${DAYS[pd(t.date).getDay()]}${t.time?' · '+t.time:' · כל היום'}${t.recur!=='none'?' · '+RECURS.find(r=>r[0]===t.recur)[1]:''}${byUid.has(t.icsUid)?' · יתעדכן':''}</small><span class="tags">${kidChips(t)}</span></span></label>`).join('')||'<div class="empty">אין אירועים עתידיים בקובץ.</div>'}</div>
+    ${list.length>shown.length?`<p class="hint">מוצגים 400 הראשונים מתוך ${list.length}.</p>`:''}
+    ${parents().length?`<div style="margin-top:12px"><span class="lbl">מי אחראי/ת על האירועים האלה (לא חובה)</span><div class="picks">${parents().map(p=>`<label class="pick" style="--c:${p.color}"><input type="checkbox" class="icsPar" value="${p.id}"${p.id===myId?' checked':''}><span><i></i>${esc(p.name)}</span></label>`).join('')}</div></div>`:''}
+    <label class="inline" style="margin-top:12px"><input type="checkbox" id="icsPriv"> לייבא כפרטי: רק בטלפון שלי, לא אצל שאר המשפחה</label>
+    <button class="btn primary block" style="margin-top:14px" data-act="icsgo">ייבוא ללוח</button>`);
+}
+function icsImport(){
+  const idx=[...document.querySelectorAll('.icsCb:checked')].map(x=>+x.value);
+  if(!idx.length){toast('לא סומנו אירועים');return}
+  const par=[...document.querySelectorAll('.icsPar:checked')].map(x=>x.value),priv=document.getElementById('icsPriv').checked;
+  const byUid=new Map(S.tasks.filter(x=>x.icsUid).map(x=>[x.icsUid,x]));
+  let added=0,updated=0;
+  idx.forEach(i=>{const t=icsPending[i];const ex=t.icsUid&&byUid.get(t.icsUid);
+    if(ex){put('tasks',ex.id,{...ex,title:t.title,date:t.date,time:t.time,dur:t.dur,recur:t.recur,days:t.days,until:t.until,skip:t.skip,location:t.location||ex.location||'',updatedAt:Date.now()});updated++}
+    else{put('tasks',newId(),{...t,parents:t.parents.length?t.parents:par,private:priv,done:false,doneDates:[],createdAt:Date.now()});added++}});
+  closeSheet();icsPending=[];
+  toast(`יובאו ${added} אירועים${updated?`, ${updated} עודכנו`:''}`);
+}
+function icsHelpSheet(){
+  openSheet(`<h3>ייבוא מהיומן</h3>
+    <p>מכניסים ללוח אירועים שכבר שמורים ביומן שלכם. אירועים חוזרים, תזכורות ושמות הילדים בכותרת מזוהים אוטומטית. אפשר לייבא שוב בכל זמן, ואירועים שכבר יובאו יתעדכנו ולא ייכנסו פעמיים.</p>
+    <label class="btn primary block" for="icsFile" style="margin-top:14px;cursor:pointer">בחירת קובץ יומן</label>
+    <input type="file" id="icsFile" accept=".ics,.zip,text/calendar,application/zip" hidden>
+    <div class="set-sec" style="margin-top:18px"><h4>איך מקבלים את הקובץ</h4>
+    <p class="hint"><b>יומן Google:</b> במחשב נכנסים ל-calendar.google.com, בוחרים הגדרות ⚙ ← "ייבוא וייצוא" ← "ייצוא". יורד קובץ zip, ואותו בוחרים כאן כמו שהוא.</p>
+    <p class="hint"><b>Outlook:</b> קובץ ← שמירת לוח שנה, ושומרים כקובץ ics.</p>
+    <p class="hint"><b>הזמנה במייל:</b> קובץ invite.ics שהגיע במייל אפשר לשמור ולבחור כאן.</p>
+    <p class="hint"><b>אייפון:</b> אפליקציית היומן של אפל לא מייצאת קובץ. אם היומן מסונכרן עם Google, מייצאים מ-Google כמו למעלה.</p></div>`);
+}
+
 function draw(){
   const app=document.getElementById('app'),nav=document.getElementById('nav'),fab=document.getElementById('fab');
   if(!UI.loaded){return}
@@ -1196,8 +1324,8 @@ function settingsSheet(){
     <p class="hint">הלוח נשמר בטלפון הזה. כדי ששניכם תראו אותו דבר, שלחו עדכון בוואטסאפ. מי שמקבל לוחץ על הקישור, או מעתיק את ההודעה ובוחר "קליטת עדכון". כשפריט השתנה בשני הטלפונים, השינוי האחרון גובר.</p>
     <div class="actions"><button class="btn primary" data-act="sendall">שליחת הלוח</button><button class="btn" data-act="importask">קליטת עדכון</button></div></div>`}
   <div class="set-sec"><h4>יומן הטלפון</h4>
-    <p class="hint">הוספת המשימות ליומן של הטלפון, עם התראה בזמן שבחרתם בכל משימה. היומן מתריע גם כשהאפליקציה סגורה.</p>
-    <div class="actions"><button class="btn" data-act="icsall">הוספת המשימות שלי ליומן</button></div></div>
+    <p class="hint">הוספת המשימות ליומן של הטלפון, עם התראה בזמן שבחרתם בכל משימה. היומן מתריע גם כשהאפליקציה סגורה. אפשר גם להפך: להכניס ללוח אירועים שכבר שמורים ביומן.</p>
+    <div class="actions"><button class="btn" data-act="icsall">הוספת המשימות שלי ליומן</button><button class="btn" data-act="icshelp">ייבוא מהיומן ללוח</button></div></div>
   <div class="set-sec"><h4>התראות</h4>
     <p class="hint">${!('Notification' in window)?'הדפדפן הזה לא תומך בהתראות. באייפון צריך קודם להוסיף את האפליקציה למסך הבית.':Notification.permission==='granted'?'ההתראות פעילות כשהאפליקציה פתוחה או ברקע. כדי לקבל התראה גם כשהיא סגורה לגמרי, הוסיפו את המשימות ליומן הטלפון.':'התראה לפני כל משימה, כשהאפליקציה פתוחה או ברקע.'}</p>
     ${'Notification' in window&&Notification.permission!=='granted'?'<div class="actions"><button class="btn" data-act="notifon">הפעלת התראות</button></div>':''}</div>
@@ -1344,6 +1472,10 @@ const ACT={
   weekshare(){shareText(weekText())},
   async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
   sharefriends(){shareText(`לוח המשפחה: אפליקציה חינמית לניהול חוגים, תורים, אירועים וקניות של כל המשפחה, עם צבע לכל ילד, דוח בוקר ודוח שבועי, והוספת משימות בקול.\nכל ההסבר והקישור לאפליקציה כאן:\n${new URL('about.html',APP_URL).href}`)},
+  icshelp(){icsHelpSheet()},
+  icsall2(el){document.querySelectorAll('.icsCb').forEach(c=>c.checked=el.dataset.v==='1')},
+  icspast(el){icsSheet(el.dataset.v==='1')},
+  icsgo(){icsImport()},
   voice(){voiceSheet()},
   mic(){startMic()},
   voicesave(){
@@ -1379,7 +1511,7 @@ document.addEventListener('submit',async e=>{
     ms.forEach(m=>put('members',m.id,m));
     toast('הלוח מוכן! עכשיו אפשר להוסיף חוגים, תורים ואירועים.')}
 });
-document.addEventListener('change',e=>{
+document.addEventListener('change',e=>{if(e.target.id==='icsFile'&&e.target.files[0]){readCalendarFile(e.target.files[0]);return}
   if(e.target.id!=='restoreFile'||!e.target.files[0])return;
   const fr=new FileReader();
   fr.onload=()=>{try{const o=JSON.parse(fr.result);if(!o||!Array.isArray(o.tasks))throw 0;pendingImport=o;closeSheet();importCodeObj(o)}catch(x){toast('הקובץ לא נראה כמו גיבוי של לוח המשפחה.')}};
