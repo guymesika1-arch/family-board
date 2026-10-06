@@ -222,10 +222,11 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 document.documentElement.lang='he';document.documentElement.dir='rtl';
 
 /* ---------- constants ---------- */
-const CATS=['חוג','רופא','אירוע משפחתי','יום הולדת','בית ספר / גן','הסעה','קניות','מסעדה','נותני שירות','תשלומים','בית','אחר'];
+const CATS=['חוג','רופא','אירוע משפחתי','יום הולדת','בית ספר / גן','הסעה','קניות','מסעדה','נותני שירות','תשלומים','בית','עבודה','אישי','זוגי','ספורט','אחר'];
 const STORES=['סופר','ירקן','פארם','לבית','אחר'];
 const KINDS=['רופא','מנקה','מסעדה','בייביסיטר','גן / בית ספר','חוג','בעל מקצוע','אחר'];
-const COLORS=['#E4572E','#F08A24','#E9C03A','#3FA34D','#16A39A','#2F80ED','#5B5FC7','#9B51E0','#E2468A','#8D6346','#0E7490','#64748B'];
+const COLORS=['#E4572E','#F08A24','#E9C03A','#3FA34D','#16A39A','#2F80ED','#5B5FC7','#9B51E0','#E2468A','#8D6346','#0E7490','#64748B','#334155','#7C3A5C'];
+const PARENT_COLORS=['#334155','#7C3A5C'];
 const DAYS=['א׳','ב׳','ג׳','ד׳','ה׳','ו׳','ש׳'];
 const DAYS_FULL=['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
 const REMINDS=[[0,'ללא התראה'],[10,'10 דקות לפני'],[15,'רבע שעה לפני'],[30,'חצי שעה לפני'],[60,'שעה לפני'],[120,'שעתיים לפני'],[180,'3 שעות לפני'],[1440,'יום לפני'],[2880,'יומיים לפני'],[10080,'שבוע לפני']];
@@ -238,7 +239,11 @@ const TEMPLATES=[
   {label:'מסעדה',cat:'מסעדה',time:'20:00',dur:120,remind:180},
   {label:'הסעה / איסוף',cat:'הסעה',time:'13:00',dur:20,remind:30},
   {label:'תשלום חודשי',cat:'תשלומים',recur:'monthly',time:'',remind:1440},
-  {label:'אירוע משפחתי',cat:'אירוע משפחתי',time:'19:00',dur:180,remind:1440}
+  {label:'אירוע משפחתי',cat:'אירוע משפחתי',time:'19:00',dur:180,remind:1440},
+  {label:'פגישת עבודה',cat:'עבודה',time:'10:00',dur:60,remind:30,parent:true},
+  {label:'ערב זוגי',cat:'זוגי',time:'20:30',dur:180,remind:180},
+  {label:'ספורט',cat:'ספורט',recur:'weekly',time:'07:00',dur:60,remind:30,parent:true},
+  {label:'משימה אישית',cat:'אישי',noDate:true,parent:true}
 ];
 
 /* ---------- icons ---------- */
@@ -365,7 +370,7 @@ async function unpack(code){
   return JSON.parse(new TextDecoder().decode(u));
 }
 const lastChange=()=>Math.max(0,...COLS.flatMap(c=>S[c].map(x=>x.updatedAt||0)),...Object.values(S.deleted),S.settings.updatedAt||0);
-function unsentCount(){const at=+(lsGet('sentAt')||0);return COLS.reduce((n,c)=>n+S[c].filter(x=>(x.updatedAt||0)>at).length,0)+Object.values(S.deleted).filter(t=>t>at).length}
+function unsentCount(){const at=+(lsGet('sentAt')||0);return COLS.reduce((n,c)=>n+S[c].filter(x=>!x.private&&(x.updatedAt||0)>at).length,0)+Object.values(S.deleted).filter(t=>t>at).length}
 function merge(inc){
   const before=unsentCount();let n=0;
   for(const k in inc.deleted||{})if((S.deleted[k]||0)<inc.deleted[k])S.deleted[k]=inc.deleted[k];
@@ -457,7 +462,8 @@ let tt;function toast(msg){const r=document.getElementById('toastRoot');r.innerH
 function kidChips(t){return (t.kids||[]).map(member).filter(Boolean).map(k=>`<span class="kchip" style="${cvars(k.color)}">${esc(k.name)}</span>`).join('')}
 function parentTags(t){return (t.parents||[]).map(member).filter(Boolean).map(p=>`<span class="ptag" style="--c:${p.color}">${esc(p.name)}</span>`).join('')}
 function whenStyle(t){
-  const ks=(t.kids||[]).map(member).filter(Boolean);
+  let ks=(t.kids||[]).map(member).filter(Boolean);
+  if(!ks.length)ks=(t.parents||[]).map(member).filter(Boolean);
   if(!ks.length)return'';
   if(ks.length===1)return `--c:${ks[0].color};--wb:${ks[0].color};--wi:${inkOn(ks[0].color)}`;
   const step=100/ks.length;
@@ -475,6 +481,7 @@ function card(t,d,o={}){
   const pills=[];
   if(o.conflict)pills.push('<span class="pill warn">חפיפה בלו״ז</span>');
   if(o.late)pills.push('<span class="pill warn">באיחור</span>');
+  if(t.private)pills.push('<span class="pill soft">פרטי</span>');
   return `<article class="item${done?' done':''}" style="${whenStyle(t)}" data-act="open" data-id="${t.id}" data-d="${d||''}">
     <div class="when">${tm}</div>
     <div class="body"><div class="title">${esc(t.title)}</div>
@@ -615,6 +622,7 @@ function taskSheet(t){
     ${kids().length?`<div><span class="lbl">לאיזה ילד זה קשור</span><div class="picks">${kids().map(k=>`<label class="pick kid" style="${cvars(k.color)}"><input type="checkbox" name="kids" value="${k.id}"${(t.kids||[]).includes(k.id)?' checked':''}><span><i></i>${esc(k.name)}</span></label>`).join('')}</div></div>`:''}
     <div><span class="lbl">מי מההורים אחראי/ת</span><div class="picks">${parents().map(p=>`<label class="pick" style="--c:${p.color}"><input type="checkbox" name="parents" value="${p.id}"${(t.parents||[]).includes(p.id)?' checked':''}><span><i></i>${esc(p.name)}</span></label>`).join('')}</div><div class="hint" style="margin-top:4px">בלי בחירה, המשימה תופיע אצל שני ההורים.</div></div>
     <label class="inline"><input type="checkbox" id="fNoDate" name="noDate"${t.date?'':' checked'}> בלי תאריך (משימה פתוחה)</label>
+    <label class="inline"><input type="checkbox" id="fPrivate" name="private"${t.private?' checked':''}> פרטי: נשאר רק בטלפון שלי ולא נשלח לבן/בת הזוג</label>
     <div id="dateBox" class="form">
       <div class="two"><div><label class="lbl" for="fDate">תאריך</label><input class="field" type="date" id="fDate" name="date" value="${t.date||today()}"></div>
       <div><label class="lbl" for="fTime">שעה</label><input class="field" type="time" id="fTime" name="time" value="${t.time||''}"></div></div>
@@ -639,7 +647,8 @@ function taskSheet(t){
       f.dur.disabled=!f.time.value};
     f.addEventListener('change',sync);f.addEventListener('input',sync);sync();
     sh.addEventListener('click',e=>{const b=e.target.closest('[data-act="tpl"]');if(!b)return;const x=TEMPLATES[+b.dataset.i];
-      f.cat.value=x.cat;f.noDate.checked=!!x.noDate;f.recur.value=x.recur||'none';f.time.value=x.time||'';if(x.dur)f.dur.value=x.dur;if(x.remind!=null)f.remind.value=x.remind;
+      f.cat.value=x.cat;f.noDate.checked=!!x.noDate;
+      if(x.parent&&!f.querySelector('[name=parents]:checked')){const me=myId&&member(myId)&&member(myId).role!=='child'?myId:'';const box=me&&f.querySelector(`[name=parents][value="${me}"]`);if(box)box.checked=true}f.recur.value=x.recur||'none';f.time.value=x.time||'';if(x.dur)f.dur.value=x.dur;if(x.remind!=null)f.remind.value=x.remind;
       if(x.recur==='weekly'){const wd=pd(f.date.value||today()).getDay();f.querySelectorAll('[name=days]').forEach(c=>c.checked=+c.value===wd)}
       if(!f.title.value||TEMPLATES.some(y=>y.title===f.title.value))f.title.value=x.title||'';
       sync();f.title.focus()});
@@ -650,7 +659,7 @@ function taskSheet(t){
       const date=noDate?'':fd.get('date');
       if((recur==='weekly'||recur==='biweekly')&&!days.length&&date)days=[pd(date).getDay()];
       const time=noDate?'':(fd.get('time')||'');
-      const obj={title:fd.get('title').trim(),cat:fd.get('cat'),date,time,dur:time?+fd.get('dur'):0,recur,days,until:recur==='none'?'':(fd.get('until')||''),
+      const obj={private:f.private.checked,title:fd.get('title').trim(),cat:fd.get('cat'),date,time,dur:time?+fd.get('dur'):0,recur,days,until:recur==='none'?'':(fd.get('until')||''),
         kids:fd.getAll('kids'),parents:fd.getAll('parents'),remind:noDate?0:remind,location:fd.get('location').trim(),notes:fd.get('notes').trim(),
         done:t.done||false,doneDates:t.doneDates||[],skip:t.skip||[],createdAt:t.createdAt||Date.now(),updatedAt:Date.now()};
       if(!obj.title){f.title.focus();return}
@@ -702,7 +711,7 @@ function detailSheet(id,d){
     </div>
     <div class="actions" style="margin-top:8px">
       ${t.date?`<button class="btn" data-act="icstask" data-id="${t.id}">הוספה ליומן הטלפון</button>`:''}
-      ${parents().length>1?`<button class="btn" data-act="sendtask" data-id="${t.id}">שליחה לבן/בת הזוג</button>`:''}
+      ${parents().length>1&&!t.private?`<button class="btn" data-act="sendtask" data-id="${t.id}">שליחה לבן/בת הזוג</button>`:''}
     </div>
     <div id="delBox" style="margin-top:8px"><button class="btn danger block" data-act="delask" data-id="${t.id}">מחיקה${isRecurring(t)?' של כל הסדרה':''}</button></div>
     ${t.date?'<p class="hint">"הוספה ליומן הטלפון" שומרת את המשימה ביומן עם התראה בזמן שבחרתם, כך שתקבלו התראה גם כשהאפליקציה סגורה.</p>':''}`);
@@ -851,9 +860,9 @@ const ACT={
   scrim(el,e){if(e.target===el)closeSheet()},
   closesheet(){closeSheet()},
   async sendall(){
-    const code=await pack({v:1,k:'all',members:S.members,tasks:S.tasks,shopping:S.shopping,contacts:S.contacts,settings:S.settings,deleted:S.deleted});
+    const code=await pack({v:1,k:'all',members:S.members,tasks:S.tasks.filter(t=>!t.private),shopping:S.shopping,contacts:S.contacts,settings:S.settings,deleted:S.deleted});
     const at=Date.now();
-    if(await shareText(`עדכון של לוח המשפחה (${S.tasks.length} משימות).\nלחצו על הקישור כדי לקלוט אותו:\n${APP_URL}#sync=${code}`)){lsSet('sentAt',String(at));render();toast('נשלח')}
+    if(await shareText(`עדכון של לוח המשפחה (${S.tasks.filter(t=>!t.private).length} משימות).\nלחצו על הקישור כדי לקלוט אותו:\n${APP_URL}#sync=${code}`)){lsSet('sentAt',String(at));render();toast('נשלח')}
   },
   async sendtask(el){
     const t=S.tasks.find(x=>x.id===el.dataset.id);if(!t)return;
@@ -894,7 +903,7 @@ document.addEventListener('submit',async e=>{
     const ps=['wP1','wP2'].map(i=>document.getElementById(i).value.trim()).filter(Boolean);
     const ks=[...document.querySelectorAll('.wkid')].map(i=>i.value.trim()).filter(Boolean);
     if(!ps.length&&!ks.length){toast('הוסיפו לפחות שם אחד');return}
-    const pc=['#334155','#B45309'];let o=1;
+    const pc=PARENT_COLORS;let o=1;
     await putSettings({family:fam,remind:60});
     for(let i=0;i<ps.length;i++)await put('members',newId('members'),{name:ps[i],role:'parent',color:pc[i],phone:'',email:'',order:o++});
     for(let i=0;i<ks.length;i++)await put('members',newId('members'),{name:ks[i],role:'child',color:COLORS[i%COLORS.length],phone:'',email:'',order:o++});
