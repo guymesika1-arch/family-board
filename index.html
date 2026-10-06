@@ -206,6 +206,15 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 #qrEl img,#qrEl canvas{display:block}
 .sync-bar .btn{height:38px;font-size:.88rem}
 
+.fab2{position:fixed;z-index:9;inset-inline-end:max(20px,calc(50% - 300px));bottom:calc(146px + env(safe-area-inset-bottom,0px));width:52px;height:52px;border-radius:18px;border:1px solid var(--line);background:var(--surface);color:var(--accent);display:grid;place-items:center;box-shadow:var(--shadow)}
+.fab2 svg{width:24px;height:24px}
+.mic{display:grid;place-items:center;width:84px;height:84px;margin:6px auto;border-radius:50%;border:0;background:var(--accent);color:var(--accent-ink)}
+.mic svg{width:36px;height:36px}
+.mic.on{background:var(--warn);color:#fff}
+@media (prefers-reduced-motion:no-preference){.mic.on{animation:micpulse 1.2s ease-out infinite}@keyframes micpulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--warn) 55%,transparent)}100%{box-shadow:0 0 0 20px transparent}}}
+.mic-state{text-align:center;font-weight:700;color:var(--muted);margin-bottom:12px;min-height:1.4em}
+.vprev{margin-top:12px;background:var(--surface2);border:1px solid var(--line);border-radius:12px;padding:4px 14px}
+.vprev .detail-row:last-child{border-bottom:0}
 .toast{position:fixed;z-index:30;bottom:calc(150px + env(safe-area-inset-bottom,0px));inset-inline:16px;max-width:480px;margin:0 auto;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-weight:700;box-shadow:var(--shadow)}
 .welcome{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;margin-top:16px}
 .welcome h2{font-family:var(--f-display);font-weight:400;font-size:1.5rem;margin:0 0 6px}
@@ -247,6 +256,7 @@ textarea.field{height:auto;min-height:70px;padding-block:10px;resize:vertical}
 <div class="app" id="app"><div class="loading">טוען את לוח המשפחה…</div></div>
 <nav class="nav" id="nav" aria-label="ניווט ראשי"></nav>
 <button class="fab" id="fab" data-act="fab" aria-label="הוספה"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+<button class="fab2" id="micFab" data-act="voice" aria-label="הוספה בקול" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg></button>
 <div id="sheetRoot"></div>
 <div id="toastRoot"></div>
 
@@ -294,6 +304,7 @@ const I={
 
 I.week='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="4" y="3" width="16" height="18" rx="2.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>';
 
+I.mic='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8.5 21h7"/></svg>';
 /* ---------- state ---------- */
 const S={members:[],tasks:[],shopping:[],contacts:[],settings:{}};
 const UI={view:lsGet('view')||'today',person:lsGet('person'),calMonth:null,calDay:null,loaded:false,reportDay:0,shopStore:'סופר'};
@@ -790,16 +801,210 @@ function weekText(){
   return L.join('\n');
 }
 
+/* ---------- voice: Hebrew sentence -> task or shopping items ---------- */
+const V_DAYS={'ראשון':0,'שני':1,'שלישי':2,'רביעי':3,'חמישי':4,'שישי':5,'שבת':6};
+const V_DAY_RE='ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת';
+const V_MONTHS={'ינואר':1,'פברואר':2,'מרץ':3,'מרס':3,'אפריל':4,'מאי':5,'יוני':6,'יולי':7,'אוגוסט':8,'ספטמבר':9,'אוקטובר':10,'נובמבר':11,'דצמבר':12};
+const V_NUMS={'אחת עשרה':11,'אחת-עשרה':11,'שתים עשרה':12,'שתיים עשרה':12,'אחת':1,'אחד':1,'שתיים':2,'שתים':2,'שניים':2,'שלוש':3,'שלושה':3,'ארבע':4,'ארבעה':4,'חמש':5,'חמישה':5,'שש':6,'שישה':6,'שבע':7,'שבעה':7,'שמונה':8,'תשע':9,'תשעה':9,'עשר':10,'עשרה':10,'עשרים':20,'שלושים':30,'ארבעים':40,'חמישים':50};
+const V_NUM_RE=Object.keys(V_NUMS).sort((a,b)=>b.length-a.length).join('|');
+const vnum=w=>w==null?NaN:/^\d+$/.test(w)?+w:(V_NUMS[w]??NaN);
+const reEsc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+const V_CATS=[
+  ['יום הולדת',/יום\s*הולדת|יומולדת/],
+  ['חוג',/חוג|שחי[יה]|כדורגל|כדורסל|ג׳ודו|ג'ודו|ג'ודו|קרטה|בלט|ריקוד|פסנתר|גיטרה|נגינה|ציור|טניס|התעמלות|שחמט|תיאטרון|רובוטיקה|מקהלה/],
+  ['רופא',/רופא|תור\s|תור$|שיניים|קופת\s*חולים|בדיקת\s*דם|אורתודנט|רופאת|עיניים|חיסון|פיזיותרפיה|קלינאית/],
+  ['הסעה',/איסוף|לאסוף|הסעה|להסיע|להקפיץ|להחזיר\s+את/],
+  ['מסעדה',/מסעדה|לאכול\s+בחוץ/],
+  ['נותני שירות',/מנקה|ניקיון|אינסטלטור|חשמלאי|טכנאי|שיפוצניק|גנן/],
+  ['תשלומים',/לשלם|תשלום|חשבון\s+(?:חשמל|מים|ארנונה|גז)|ארנונה|חשבונית/],
+  ['בית ספר / גן',/אסיפת\s*הורים|בית\s*ספר|בית\s*הספר|הגן|גננת|מורה|טיול\s*שנתי|מסיבת\s*סיום/],
+  ['עבודה',/פגישה|ישיבה|עבודה|זום|ראיון/],
+  ['ספורט',/כושר|ריצה|פילאטיס|יוגה|אימון|חדר\s*כושר/],
+  ['זוגי',/דייט|ערב\s*זוגי|ערב\s*רומנטי/],
+  ['אירוע משפחתי',/חתונה|בר\s*מצווה|בת\s*מצווה|ברית|אירוע|ארוחה\s*משפחתית|ארוחת\s*שישי|סבתא|סבא|חג/],
+  ['קניות',/לקנות|קניות|סופר/]
+];
+function vDur(str){
+  str=(str||'').trim();
+  if(/^שלושת\s+רבעי\s+שעה$/.test(str))return 45;
+  if(/^חצי\s+שעה$/.test(str))return 30;
+  if(/^רבע\s+שעה$/.test(str))return 15;
+  if(/^שעה\s+וחצי$/.test(str))return 90;
+  if(/^שעתיים(\s+וחצי)?$/.test(str))return /וחצי/.test(str)?150:120;
+  if(/^שעה$/.test(str))return 60;
+  if(/^יומיים$/.test(str))return 2880;
+  if(/^(יום|יממה)$/.test(str))return 1440;
+  if(/^שבוע$/.test(str))return 10080;
+  let m=str.match(new RegExp(`^(\\d+|${V_NUM_RE})\\s+(דקות|דק׳|דק'|שעות|ימים)$`));
+  if(m){const n=vnum(m[1]);return m[2].startsWith('ד')?n:m[2]==='שעות'?n*60:n*1440}
+  return NaN;
+}
+const V_DUR_RE=`שלושת\\s+רבעי\\s+שעה|חצי\\s+שעה|רבע\\s+שעה|שעה\\s+וחצי|שעתיים(?:\\s+וחצי)?|שעה|יומיים|יום|שבוע|(?:\\d+|${V_NUM_RE})\\s+(?:דקות|דק׳|דק'|שעות|ימים)`;
+function nextWeekday(from,wd,strictNext){const d=pd(from);let add=(wd-d.getDay()+7)%7;if(strictNext&&add===0)add=7;d.setDate(d.getDate()+add);return ymd(d)}
+
+function parseVoice(raw,ctx){
+  ctx=ctx||{};const now=ctx.now||new Date(),t0=ymd(now);
+  let t=' '+String(raw||'').replace(/[“”"״]/g,'"').replace(/[!?،]/g,' ').replace(/\s+/g,' ').trim()+' ';
+  t=t.replace(/(\s)([בלמ])-(?=\S)/g,'$1$2').replace(/ (\d{1,2})\.(\d{2}) (?=בבוקר|בערב|אחה|אחרי|בצהריים)/g,' $1:$2 ');
+  const cut=(re,fn)=>{const m=t.match(re);if(!m)return null;const r=fn?fn(m):m;t=t.replace(m[0],' ');return r||m};
+
+  // shopping list
+  const shop=t.match(/^\s*(?:(?:תוסיף|תוסיפי|הוסף|הוסיפי|תכניס|תכניסי|תרשום|תרשמי|רשום)\s+)?(?:(?:ל|ב)(?:רשימת\s+(?:ה)?)?(?:ה)?קניות|לרשימה)\s+(.+)$/)||t.match(/^\s*(?:(?:אני\s+|אנחנו\s+)?(?:צריך|צריכה|צריכים)\s+)?לקנות\s+(.+)$/);
+  if(shop&&!/\s(?:מחר|היום|בשעה|ביום)\s/.test(t)){
+    let body=shop[1].trim().replace(/\s+(?:בבקשה|תודה)\s*$/,'');
+    let items=body.split(/\s*,\s*|\s+ו(?=\S{2,})/).map(s=>s.trim()).filter(Boolean);
+    if(!/,/.test(body))items=items.flatMap(s=>s.split(/\s+/));
+    return {kind:'shop',items};
+  }
+
+  const task={title:'',cat:'אחר',date:'',time:'',dur:60,recur:'none',days:[],kids:[],parents:[],remind:ctx.remind??60,location:'',notes:''};
+  let pm=null,hasTime=false,explicitDate=false,dateWd=null;
+
+  // reminder: "תזכיר לי שעה לפני", "עם התראה של חצי שעה לפני"
+  cut(new RegExp(`\\s(?:ו)?(?:עם\\s+)?(?:תזכיר(?:י)?(?:\\s+(?:לי|לנו))?|תזכורת|התראה|להזכיר(?:\\s+לי)?)(?:\\s+של)?\\s+(${V_DUR_RE})\\s+(?:לפני|קודם)(?:\\s+כן)?\\s`),m=>{const v=vDur(m[1]);if(v>=0)task.remind=v;return 1});
+  cut(/\s(?:ו)?(?:בלי|ללא)\s+(?:תזכורת|התראה)\s/,()=>{task.remind=0;return 1});
+  // duration
+  cut(new RegExp(`\\s(?:ל|למשך|במשך|לאורך)\\s*(${V_DUR_RE})(?=\\s)`),m=>{const v=vDur(m[1]);if(v>0&&v<1440)task.dur=v;return 1});
+
+  // recurrence
+  const dayList=s=>(s.match(new RegExp(V_DAY_RE,'g'))||[]).map(x=>V_DAYS[x]);
+  if(cut(/\s(?:כל|פעם\s+ב)\s*שבועיים\s/,()=>{task.recur='biweekly';return 1})){}
+  cut(new RegExp(`\\s(?:כל|בכל|בימי|ימי)\\s+(?:יום\\s+|ימי\\s+)?((?:${V_DAY_RE})(?:\\s*(?:,|ו|וגם|ו\\s*יום|וב?יום|ו-)\\s*(?:יום\\s+)?(?:${V_DAY_RE}))*)(?=\\s)`),m=>{task.days=dayList(m[1]);if(task.recur==='none')task.recur='weekly';return 1});
+  cut(/\s(?:כל|פעם\s+ב)\s*שבוע\s/,()=>{task.recur='weekly';return 1});
+  cut(/\s(?:כל|פעם\s+ב)\s*חודש\s/,()=>{task.recur='monthly';return 1});
+  cut(/\s(?:כל|פעם\s+ב)\s*שנה\s/,()=>{task.recur='yearly';return 1});
+  cut(/\s(?:כל\s+יום|כל\s+בוקר|כל\s+ערב|יום\s+יום)\s/,m=>{task.recur='daily';if(/בוקר/.test(m[0]))pm=false;if(/ערב/.test(m[0]))pm=true;return 1});
+
+  // dates
+  cut(/\s(?:ב|ה|ל)?(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?(?=\s)/,m=>{let y=m[3]?+m[3]:now.getFullYear();if(y<100)y+=2000;const d=new Date(y,+m[2]-1,+m[1]);if(!m[3]&&ymd(d)<t0)d.setFullYear(y+1);task.date=ymd(d);explicitDate=true;return 1});
+  if(!task.date)cut(new RegExp(`\\s(?:ב|ה|ל)?(\\d{1,2}|${V_NUM_RE})\\s+(?:ב|ל)(${Object.keys(V_MONTHS).join('|')})(?=\\s)`),m=>{const dd=vnum(m[1]);if(!dd)return null;const d=new Date(now.getFullYear(),V_MONTHS[m[2]]-1,dd);if(ymd(d)<t0)d.setFullYear(d.getFullYear()+1);task.date=ymd(d);explicitDate=true;return 1});
+  if(!task.date)cut(/\s(?:ב)?מחרתיים\s/,()=>{task.date=addDays(t0,2);explicitDate=true;return 1});
+  if(!task.date)cut(/\s(?:ב)?מחר(?:\s+(בבוקר|בערב|בצהריים))?\s/,m=>{task.date=addDays(t0,1);explicitDate=true;if(m[1])t+=' '+m[1]+' ';return 1});
+  if(!task.date)cut(/\s(?:היום|הערב|הבוקר)\s/,m=>{task.date=t0;explicitDate=true;if(/ערב/.test(m[0]))pm=true;if(/בוקר/.test(m[0]))pm=false;return 1});
+  if(!task.date)cut(new RegExp(`\\sבעוד\\s+(${V_DUR_RE}|שבועיים|חודש)\\s`),m=>{const w=m[1];const n=w==='שבועיים'?14:w==='חודש'?30:Math.round((vDur(w)||0)/1440);if(n>0){task.date=addDays(t0,n);explicitDate=true}return 1});
+  if(!task.date)cut(new RegExp(`\\s(?:ב?יום\\s+|ב)(${V_DAY_RE})(\\s+הבא|\\s+הקרוב)?(?=\\s)`),m=>{dateWd=V_DAYS[m[1]];task.date=nextWeekday(t0,dateWd,!!(m[2]&&/הבא/.test(m[2])));explicitDate=true;if(task.recur==='weekly'&&!task.days.length)task.days=[dateWd];return 1});
+  if(!task.date)cut(/\s(?:ב)?שבוע\s+הבא\s/,()=>{task.date=addDays(weekStartOf(t0),7);explicitDate=true;return 1});
+
+  // time of day words
+  cut(/\s(?:ב)?(?:אחרי\s+הצהריים|אחר\s+הצהריים|אחה"צ|אחהצ)\s/,()=>{pm=true;return 1});
+  cut(/\s(?:ב|ל|ה)ערב\s/,()=>{pm=true;return 1});
+  cut(/\s(?:ב)?לילה\s/,()=>{pm=true;return 1});
+  cut(/\s(?:ב|ל|ה)בוקר\s/,()=>{pm=false;return 1});
+  let noon=!!cut(/\s(?:ב)?צהריים\s/,()=>1);
+  // clock time
+  let h=null,mi=0;
+  cut(/\s(?:בשעה\s+|ב|ל|עד\s+)?(\d{1,2}):(\d{2})(?=\s)/,m=>{h=+m[1];mi=+m[2];return 1});
+  if(h==null)cut(new RegExp(`\\s(?:בשעה\\s+|ב\\s?|ל)(\\d{1,2}|${V_NUM_RE})(?:\\s+(וחצי|ורבע|פחות\\s+רבע|ועשרה|ועשר|ועשרים|וחמישה|וחמש))?(?=\\s)`),m=>{const n=vnum(m[1]);if(!(n>=1&&n<=24))return null;h=n;
+    const f=m[2]||'';mi=/חצי/.test(f)?30:/פחות/.test(f)?-15:/רבע/.test(f)?15:/עשרים/.test(f)?20:/עשר/.test(f)?10:/חמש/.test(f)?5:0;if(mi<0){h-=1;mi=45}return 1});
+  if(h==null&&noon){h=12;mi=0}
+  if(h!=null){
+    if(pm===true&&h<12)h+=12;
+    else if(pm==null&&noon&&h<6)h+=12;
+    else if(pm==null&&h>=1&&h<=7)h+=12;
+    if(h===24)h=0;
+    task.time=pad(h)+':'+pad(mi);hasTime=true;
+  }
+
+  // people
+  const meM=member(ctx.me);
+  [...(ctx.members||S.members)].sort((a,b)=>b.name.length-a.name.length).forEach(m=>{
+    if(!m.name)return;
+    const re=new RegExp(`\\s(?:של\\s+|עם\\s+|את\\s+|בשביל\\s+)?[ולשבהמ]{0,2}${reEsc(m.name)}(?=[\\s,.])`);
+    if(re.test(t)){t=t.replace(re,' ');(m.role==='child'?task.kids:task.parents).push(m.id)}
+  });
+  if(meM&&meM.role!=='child')cut(/\s(?:אני|אותי|אצלי|שלי|בשבילי)\s/,()=>{if(!task.parents.includes(meM.id))task.parents.push(meM.id);return 1});
+
+  // category (from the full sentence)
+  for(const [c,re] of V_CATS)if(re.test(raw)){task.cat=c;break}
+  if(task.cat==='יום הולדת'&&task.recur==='none')task.recur='yearly';
+  if(task.cat==='יום הולדת'&&!hasTime)task.dur=60;
+
+  // dates for recurring items without a date, and timed items without a date
+  if(!task.date&&(task.recur==='weekly'||task.recur==='biweekly')&&task.days.length){
+    const cand=task.days.map(wd=>nextWeekday(t0,wd,false)).sort();task.date=cand[0];
+    if(task.date===t0&&hasTime&&task.time<pad(now.getHours())+':'+pad(now.getMinutes()))task.date=cand[1]||nextWeekday(t0,task.days[0],true);
+  }
+  if(!task.date&&(hasTime||task.recur!=='none')){
+    task.date=t0;if(hasTime&&task.recur==='none'&&task.time<=pad(now.getHours())+':'+pad(now.getMinutes()))task.date=addDays(t0,1);
+  }
+  if((task.recur==='weekly'||task.recur==='biweekly')&&!task.days.length&&task.date)task.days=[pd(task.date).getDay()];
+  if(!task.time)task.dur=0;
+  if(!task.date)task.remind=0;
+
+  // title: what is left, minus command words and stray prepositions
+  let title=t.replace(/\s+/g,' ').trim();
+  const lead=/^(?:תוסיף|תוסיפי|הוסף|הוסיפי|תיצור|תיצרי|צור|תקבע|תקבעי|קבע|תרשום|תרשמי|רשום|תכניס|תכניסי|תזכיר(?:י)?\s+(?:לי|לנו)|יש\s+לנו|יש\s+ל|יש|צריך|צריכה|צריכים|אני\s+צריך|אני\s+צריכה|לקבוע|בבקשה|נא)(?:\s+(?:לי|לנו))?\s+/;
+  const filler=/(?:^|\s)(?:משימה|משימת|אירוע\s+ביומן|ביומן|ללוח|בלוח|בלו"ז|ללו"ז|בלוז|ללוז|בשעה|ביום|בבקשה|תודה|גם|כן|שנקרא|שנקראת)(?=\s|$)/g;
+  for(let i=0;i<4;i++)title=title.replace(lead,'');
+  title=title.replace(filler,' ').replace(/\s+/g,' ').trim();
+  for(let i=0;i<3;i++)title=title.replace(/^(?:ל|ב|של|עם|את|ו|ה|על|שה|ש)\s+/,'').replace(/\s+(?:ל|ב|של|עם|את|ו|ה|על|עד|מ|ש|וגם|כל)$/,'').trim();
+  if(!title)title=task.cat==='אחר'?'משימה חדשה':task.cat;
+  task.title=title;
+  return {kind:'task',task};
+}
+
+/* voice sheet */
+let rec=null,vParsed=null;
+const SpeechRec=window.SpeechRecognition||window.webkitSpeechRecognition;
+function voiceSheet(){
+  vParsed=null;
+  openSheet(`<h3>הוספה בקול</h3>
+    <p class="hint">${SpeechRec?'לחצו על המיקרופון ואמרו מה להוסיף.':'לחצו על המיקרופון שבמקלדת ואמרו מה להוסיף, או הקלידו.'} לדוגמה: "חוג שחייה לנועה כל יום שני בחמש", "תור לרופא שיניים מחר בעשר" או "תוסיף לקניות חלב וביצים".</p>
+    ${SpeechRec?`<button class="mic" id="micBtn" data-act="mic" aria-label="התחלת הקלטה">${I.mic}</button><div class="mic-state" id="micState">לחצו כדי לדבר</div>`:''}
+    <label class="lbl" for="voiceText">מה שנאמר (אפשר לתקן)</label>
+    <textarea class="field" id="voiceText" rows="2" placeholder="מה להוסיף?"></textarea>
+    <div id="voicePreview"></div>`,sh=>{
+      sh.querySelector('#voiceText').addEventListener('input',voicePreview);
+      if(SpeechRec)startMic(); // still inside the tap, which phones require for the microphone
+    });
+}
+function voicePreview(){
+  const box=document.getElementById('voicePreview'),txt=(document.getElementById('voiceText')||{}).value||'';
+  if(!box)return;
+  if(!txt.trim()){box.innerHTML='';vParsed=null;return}
+  vParsed=parseVoice(txt,{me:myId,remind:S.settings.remind??60});
+  if(vParsed.kind==='shop'){
+    box.innerHTML=`<div class="vprev"><div class="detail-row"><b>לקניות</b><div>${vParsed.items.map(esc).join('<br>')}</div></div></div>
+      <div class="actions" style="margin-top:12px"><button class="btn primary" data-act="voicesave">הוספה לרשימת הקניות</button></div>`;
+    return;
+  }
+  const t=vParsed.task,ps=t.parents.map(member).filter(Boolean);
+  const when=t.date?`${dateLong(t.date)}${t.time?' · '+t.time:' · כל היום'}`:'בלי תאריך (משימה פתוחה)';
+  const rows=[['מה',`<b>${esc(t.title)}</b>`],['סוג',esc(t.cat)],['מתי',when],['חזרה',t.recur!=='none'?recurText(t):''],
+    ['ילדים',kidChips(t)],['אחראים',ps.length?parentTags(t):''],['התראה',t.remind?remindText(t.remind):'']].filter(r=>r[1]);
+  box.innerHTML=`<div class="vprev">${rows.map(([k,v])=>`<div class="detail-row"><b>${k}</b><div><span class="tags" style="display:flex;flex-wrap:wrap;gap:4px">${v}</span></div></div>`).join('')}</div>
+    <div class="actions" style="margin-top:12px"><button class="btn primary" data-act="voicesave">שמירה ביומן</button><button class="btn" data-act="voiceedit">תיקון לפני שמירה</button></div>`;
+}
+function setMicUI(on,msg){
+  const b=document.getElementById('micBtn'),s=document.getElementById('micState');
+  if(b){b.classList.toggle('on',on);b.setAttribute('aria-label',on?'עצירת הקלטה':'התחלת הקלטה')}
+  if(s)s.textContent=msg||(on?'מקשיב… דברו עכשיו':'לחצו כדי לדבר שוב');
+}
+function stopMic(){if(rec){try{rec.stop()}catch(e){}}}
+function startMic(){
+  if(!SpeechRec)return;
+  if(rec){stopMic();return}
+  const ta=document.getElementById('voiceText');let base=ta&&ta.value.trim()?ta.value.trim()+' ':'',fin='';
+  rec=new SpeechRec();rec.lang='he-IL';rec.interimResults=true;rec.continuous=false;rec.maxAlternatives=1;
+  let err='';
+  rec.onresult=e=>{let interim='';for(let i=e.resultIndex;i<e.results.length;i++){const r=e.results[i];if(r.isFinal)fin+=r[0].transcript+' ';else interim+=r[0].transcript}
+    const el=document.getElementById('voiceText');if(el){el.value=(base+fin+interim).trim();voicePreview()}};
+  rec.onerror=e=>{err=e.error==='not-allowed'||e.error==='service-not-allowed'?'אין הרשאה למיקרופון. אפשר לאשר אותה בהגדרות הדפדפן, או להקליד.':e.error==='no-speech'?'לא שמעתי כלום. לחצו ונסו שוב.':e.error==='aborted'?'':'ההקלטה נעצרה. לחצו ונסו שוב, או הקלידו.'};
+  rec.onend=()=>{rec=null;setMicUI(false,err||undefined)};
+  try{rec.start();setMicUI(true)}catch(e){rec=null;setMicUI(false,'לא הצלחתי להפעיל את המיקרופון. אפשר להקליד.')}
+}
+
 function draw(){
   const app=document.getElementById('app'),nav=document.getElementById('nav'),fab=document.getElementById('fab');
   if(!UI.loaded){return}
   if(personAuto&&myId&&member(myId)){UI.person=myId;personAuto=false}
   if(UI.person&&!member(UI.person))UI.person='';
   const scroll=window.scrollY;
-  if(UI.error){app.innerHTML=viewError();nav.hidden=true;fab.hidden=true;return}
-  if(CLOUD?!fid:!S.members.length){app.innerHTML=viewWelcome();nav.hidden=true;fab.hidden=true;return}
+  if(UI.error){app.innerHTML=viewError();nav.hidden=true;fab.hidden=true;document.getElementById('micFab').hidden=true;return}
+  if(CLOUD?!fid:!S.members.length){app.innerHTML=viewWelcome();nav.hidden=true;fab.hidden=true;document.getElementById('micFab').hidden=true;return}
   nav.hidden=false;fab.hidden=false;
   const v=UI.view;
+  document.getElementById('micFab').hidden=v==='contacts';
   const focusId=document.activeElement&&document.activeElement.id;
   app.innerHTML=v==='week'?viewWeek():v==='cal'?viewCal():v==='shop'?viewShop():v==='contacts'?viewContacts():viewToday();
   const shopLeft=S.shopping.filter(s=>!s.done).length;
@@ -818,12 +1023,12 @@ function openSheet(html,onMount){
   onMount&&onMount(r.querySelector('.sheet'));
   if(f&&!('ontouchstart' in window))f.focus();
 }
-function closeSheet(){document.getElementById('sheetRoot').innerHTML='';document.body.style.overflow=''}
+function closeSheet(){if(rec){try{rec.abort()}catch(e){}rec=null}document.getElementById('sheetRoot').innerHTML='';document.body.style.overflow=''}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeSheet()});
 
 /* ---------- task editor ---------- */
 function taskSheet(t){
-  const isNew=!t;
+  const isNew=!t||!t.id;
   t=t||{title:'',cat:'אחר',date:UI.view==='cal'&&UI.calDay?UI.calDay:today(),time:'',dur:60,recur:'none',days:[],parents:UI.person&&member(UI.person)?.role!=='child'?[UI.person]:[],kids:UI.person&&member(UI.person)?.role==='child'?[UI.person]:[],remind:S.settings.remind??60,location:'',notes:''};
   const remindKnown=REMINDS.some(r=>r[0]===+t.remind);
   const html=`<h3>${isNew?'משימה חדשה':'עריכת משימה'}</h3>
@@ -1126,6 +1331,15 @@ const ACT={
   wk(el){const n=+el.dataset.n;UI.weekStart=n?addDays(UI.weekStart||weekStartOf(today()),7*n):weekStartOf(today());draw();window.scrollTo(0,0)},
   weekshare(){shareText(weekText())},
   async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
+  voice(){voiceSheet()},
+  mic(){startMic()},
+  voicesave(){
+    if(!vParsed)return;
+    if(vParsed.kind==='shop'){vParsed.items.forEach(n=>put('shopping',newId(),{name:n,store:'סופר',done:false,createdAt:Date.now()}));closeSheet();toast(`נוספו ${vParsed.items.length} פריטים לקניות`);return}
+    const t=vParsed.task;put('tasks',newId(),{...t,done:false,doneDates:[],skip:[],createdAt:Date.now()});closeSheet();
+    toast(`נוסף: ${t.title}${t.date?' · '+dateShort(t.date):''}${t.time?' '+t.time:''}`);
+  },
+  voiceedit(){if(vParsed&&vParsed.kind==='task')taskSheet({...vParsed.task})},
   addkidrow(){const w=document.getElementById('wKids');const n=w.children.length;w.insertAdjacentHTML('beforeend',kidRow(n));document.getElementById('wKid'+n).focus()}
 };
 document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if(!el)return;const fn=ACT[el.dataset.act];if(fn)fn(el,e)});
