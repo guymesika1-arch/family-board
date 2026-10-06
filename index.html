@@ -1122,13 +1122,103 @@ function icsImport(){
 function icsHelpSheet(){
   openSheet(`<h3>ייבוא מהיומן</h3>
     <p>מכניסים ללוח אירועים שכבר שמורים ביומן שלכם. אירועים חוזרים, תזכורות ושמות הילדים בכותרת מזוהים אוטומטית. אפשר לייבא שוב בכל זמן, ואירועים שכבר יובאו יתעדכנו ולא ייכנסו פעמיים.</p>
-    <label class="btn primary block" for="icsFile" style="margin-top:14px;cursor:pointer">בחירת קובץ יומן</label>
+    ${CLOUD?`<button class="btn primary block" style="margin-top:14px" data-act="gcal">חיבור ליומן Google</button>
+    <p class="hint" style="margin-top:6px">גישה לקריאה בלבד. האפליקציה לא משנה ולא מוחקת דבר ביומן. אם Google מציגה "האפליקציה לא אומתה", לוחצים "מתקדם" ואז "מעבר ל-family-board".</p>`:''}
+    <label class="btn${CLOUD?'':' primary'} block" for="icsFile" style="margin-top:14px;cursor:pointer">בחירת קובץ יומן</label>
     <input type="file" id="icsFile" accept=".ics,.zip,text/calendar,application/zip" hidden>
     <div class="set-sec" style="margin-top:18px"><h4>איך מקבלים את הקובץ</h4>
     <p class="hint"><b>יומן Google:</b> במחשב נכנסים ל-calendar.google.com, בוחרים הגדרות ⚙ ← "ייבוא וייצוא" ← "ייצוא". יורד קובץ zip, ואותו בוחרים כאן כמו שהוא.</p>
     <p class="hint"><b>Outlook:</b> קובץ ← שמירת לוח שנה, ושומרים כקובץ ics.</p>
     <p class="hint"><b>הזמנה במייל:</b> קובץ invite.ics שהגיע במייל אפשר לשמור ולבחור כאן.</p>
-    <p class="hint"><b>אייפון:</b> אפליקציית היומן של אפל לא מייצאת קובץ. אם היומן מסונכרן עם Google, מייצאים מ-Google כמו למעלה.</p></div>`);
+    <p class="hint"><b>אייפון:</b> אפליקציית היומן של אפל לא מייצאת קובץ. אם היומן מסונכרן עם Google, מתחברים ליומן Google או מייצאים ממנו.</p></div>`);
+  prepareGcal();
+}
+
+/* ---------- direct import from Google Calendar ---------- */
+// Uses a separate Firebase auth instance only to get a read-only Calendar token,
+// so the device's family membership (its anonymous account) is never touched.
+let gcalToken=null,gcalCals=[],gcalAuth=null;
+// Prepared ahead of the tap: phones only allow the sign-in window to open directly from the tap.
+function prepareGcal(){
+  if(gcalAuth||!CLOUD||!window.firebase)return;
+  const app=firebase.apps.find(a=>a.name==='gcal')||firebase.initializeApp(window.FIREBASE_CONFIG,'gcal');
+  gcalAuth=app.auth();gcalAuth.setPersistence(firebase.auth.Auth.Persistence.NONE).catch(()=>{});
+}
+async function googleCalendarToken(){
+  prepareGcal();const a=gcalAuth;
+  const p=new firebase.auth.GoogleAuthProvider();
+  p.addScope('https://www.googleapis.com/auth/calendar.readonly');
+  p.setCustomParameters({prompt:'select_account'});
+  const r=await a.signInWithPopup(p);
+  const tok=r.credential&&r.credential.accessToken;
+  a.signOut().catch(()=>{});
+  return tok;
+}
+async function gapiGet(url){
+  const r=await fetch(url,{headers:{authorization:'Bearer '+gcalToken}});
+  if(!r.ok){const j=await r.json().catch(()=>({}));const e=new Error((j.error&&j.error.message)||r.status);e.status=r.status;e.reason=j.error&&j.error.errors&&j.error.errors[0]&&j.error.errors[0].reason;throw e}
+  return r.json();
+}
+async function gcalConnect(btn){
+  if(!CLOUD||!window.firebase){toast('החיבור ל-Google זמין רק בלוח משפחתי משותף.');return}
+  if(btn){btn.disabled=true;btn.textContent='מתחבר ל-Google…'}
+  try{
+    gcalToken=await googleCalendarToken();
+    if(!gcalToken)throw new Error('no token');
+    const list=await gapiGet('https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader&maxResults=250');
+    gcalCals=(list.items||[]).filter(c=>!c.deleted&&!/#(holiday|contacts|weather)@/.test(c.id));
+    gcalPickSheet();
+  }catch(e){
+    console.warn(e);
+    const c=e&&e.code;
+    if(c==='auth/popup-closed-by-user'||c==='auth/cancelled-popup-request'){}
+    else if(c==='auth/popup-blocked')toast('הדפדפן חסם את חלון ההתחברות. אפשרו חלונות קופצים ונסו שוב.');
+    else if(c==='auth/operation-not-allowed')toast('ההתחברות עם Google עוד לא הופעלה באפליקציה.');
+    else if(c==='auth/unauthorized-domain')toast('הכתובת הזו לא מורשית להתחבר ל-Google.');
+    else if(e&&e.status===403)toast('אין גישה ליומן. ודאו שאישרתם גישה ליומן בחלון של Google.');
+    else toast('החיבור ל-Google לא הצליח. אפשר לייבא מקובץ במקום.');
+  }finally{if(btn){btn.disabled=false;btn.textContent='חיבור ליומן Google'}}
+}
+function gcalPickSheet(){
+  if(!gcalCals.length){toast('לא נמצאו יומנים בחשבון.');return}
+  openSheet(`<h3>אילו יומנים לייבא?</h3><p class="hint">בחרו יומן אחד או יותר. מייבאים אירועים מהיום והלאה, כולל אירועים חוזרים.</p>
+    <div class="ics-list" style="margin-top:10px">${gcalCals.map((c,i)=>`<label class="ics-row"><input type="checkbox" class="gcalCb" value="${i}"${c.primary?' checked':''}><span><b><i style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${esc(c.backgroundColor||'#888')};margin-inline-end:6px"></i>${esc(c.summaryOverride||c.summary||c.id)}</b>${c.primary?'<small>היומן הראשי</small>':''}</span></label>`).join('')}</div>
+    <button class="btn primary block" style="margin-top:14px" data-act="gcalfetch">המשך</button>`);
+}
+function gEvToIcs(ev,cal){
+  if(ev.status==='cancelled'||ev.recurringEventId)return null;
+  const when=s=>!s?null:s.date?{v:s.date.replace(/-/g,''),P:{VALUE:'DATE'}}:{v:new Date(s.dateTime).toISOString().replace(/[-:]/g,'').replace(/\.\d+/,''),P:{}};
+  const o={UID:{v:ev.iCalUID||ev.id,P:{}},SUMMARY:{v:(ev.summary||'').replace(/\\/g,'\\\\'),P:{}},DTSTART:when(ev.start),DTEND:when(ev.end),EXDATE:[],ALARMS:[]};
+  if(ev.location)o.LOCATION={v:ev.location.replace(/\\/g,'\\\\'),P:{}};
+  if(ev.description)o.DESCRIPTION={v:ev.description.replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/\\/g,'\\\\'),P:{}};
+  (ev.recurrence||[]).forEach(line=>{
+    if(/^RRULE:/i.test(line))o.RRULE={v:line.slice(6),P:{}};
+    else if(/^EXDATE/i.test(line)){const m=line.match(/^EXDATE((?:;[^:]+)*):(.*)$/i);if(m){const P={};(m[1].match(/;[^;=]+=[^;]*/g)||[]).forEach(x=>{const i=x.indexOf('=');P[x.slice(1,i).toUpperCase()]=x.slice(i+1)});m[2].split(',').forEach(v=>o.EXDATE.push({v,P}))}}
+  });
+  const rem=ev.reminders?(ev.reminders.useDefault?(cal.defaultReminders||[]):(ev.reminders.overrides||[])):[];
+  if(rem.length){const m=Math.min(...rem.map(r=>r.minutes));o.ALARMS.push({v:'-PT'+m+'M',P:{}})}
+  return o.DTSTART?o:null;
+}
+async function gcalFetch(){
+  const chosen=[...document.querySelectorAll('.gcalCb:checked')].map(x=>gcalCals[+x.value]);
+  if(!chosen.length){toast('בחרו לפחות יומן אחד');return}
+  const btn=document.querySelector('[data-act="gcalfetch"]');if(btn){btn.disabled=true;btn.textContent='טוען אירועים…'}
+  const t0=new Date();t0.setHours(0,0,0,0);
+  const out=[];
+  try{
+    for(const cal of chosen){
+      let page='';
+      for(let n=0;n<10;n++){
+        const u=`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(cal.id)}/events?maxResults=2500&showDeleted=false&singleEvents=false&timeMin=${encodeURIComponent(t0.toISOString())}${page?'&pageToken='+encodeURIComponent(page):''}`;
+        const j=await gapiGet(u);(j.items||[]).forEach(ev=>{const o=gEvToIcs(ev,cal);if(o)out.push(o)});
+        if(!j.nextPageToken)break;page=j.nextPageToken;
+      }
+    }
+  }catch(e){console.warn(e);toast('טעינת האירועים נכשלה. נסו שוב.');if(btn){btn.disabled=false;btn.textContent='המשך'}return}
+  const all=out.map(icsToTask).filter(Boolean);
+  if(!all.length){closeSheet();toast('לא נמצאו אירועים עתידיים ביומנים שנבחרו.');return}
+  const seen=new Set();icsPending=all.filter(t=>{if(!t.icsUid)return true;if(seen.has(t.icsUid))return false;seen.add(t.icsUid);return true});
+  gcalToken=null;icsSheet(false);
 }
 
 function draw(){
@@ -1473,6 +1563,8 @@ const ACT={
   async weekcopy(){try{await navigator.clipboard.writeText(weekText());toast('הדוח הועתק')}catch(e){toast('ההעתקה לא הצליחה בדפדפן הזה. נסו "שיתוף הדוח".')}},
   sharefriends(){shareText(`לוח המשפחה: אפליקציה חינמית לניהול חוגים, תורים, אירועים וקניות של כל המשפחה, עם צבע לכל ילד, דוח בוקר ודוח שבועי, והוספת משימות בקול.\nכל ההסבר והקישור לאפליקציה כאן:\n${new URL('about.html',APP_URL).href}`)},
   icshelp(){icsHelpSheet()},
+  gcal(el){gcalConnect(el)},
+  gcalfetch(){gcalFetch()},
   icsall2(el){document.querySelectorAll('.icsCb').forEach(c=>c.checked=el.dataset.v==='1')},
   icspast(el){icsSheet(el.dataset.v==='1')},
   icsgo(){icsImport()},
