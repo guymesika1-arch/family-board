@@ -478,7 +478,11 @@ function openFamily(id){
   const ready=()=>{if(--pending>0)return;UI.loaded=true;render();setTimeout(()=>{
     if(!member(myId)&&S.members.length&&!askedWho&&!location.hash){askedWho=true;whoSheet()}
     if(location.hash)handleHash();else morningCheck();notifyDue()},60)};
-  const onErr=e=>{if(e&&e.code==='permission-denied'){leaveLocal();toast('אין לך גישה ללוח הזה. אפשר להצטרף שוב עם קוד הזמנה.')}};
+  let lost=false;
+  const onErr=async e=>{if(!(e&&e.code==='permission-denied')||lost||fid!==id)return;lost=true;
+    try{const ix=await fdb.collection('userIndex').doc(uid).get({source:'server'});const nf=ix.exists&&ix.data().familyId;
+      if(nf&&nf!==id){askedWho=false;openFamily(nf);toast('הטלפון עבר ללוח המשפחה המשותף');return}}catch(x){}
+    leaveLocal();toast('אין לך גישה ללוח הזה. אפשר להצטרף שוב עם קוד הזמנה.')};
   const fam=famRef();
   let f1=true;unsubs.push(fam.onSnapshot(s=>{const d=s.data()||{};S.settings={...(d.settings||{})};if(!S.settings.family)S.settings.family=d.name||'';famCode=d.code||'';if(f1){f1=false;ready()}else render()},onErr));
   let f2=true;unsubs.push(fam.collection('users').onSnapshot(s=>{famUsers=s.docs.map(x=>({...x.data(),id:x.id}));const me=famUsers.find(x=>x.id===uid);if(me&&me.memberId&&me.memberId!==myId){myId=me.memberId;lsSet('me',myId)}if(f2){f2=false;ready()}else render()},onErr));
@@ -499,7 +503,7 @@ async function createFamily(name,data){
   (data.tasks||[]).filter(t=>t.private).forEach(t=>{if(!privTasks.some(p=>p.id===t.id))privTasks.push(t)});savePrivate();
   askedWho=false;openFamily(id);
 }
-async function joinFamily(code){
+async function joinFamily(code,bring){
   code=String(code||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
   if(code.length!==8){toast('קוד ההזמנה צריך להיות באורך 8 תווים.');return}
   if(!uid){toast('עדיין מתחבר. נסו שוב בעוד רגע.');return}
@@ -507,9 +511,30 @@ async function joinFamily(code){
     const inv=await fdb.collection('invites').doc(code).get();
     if(!inv.exists){toast('הקוד לא נמצא. בדקו שהעתקתם אותו נכון.');return}
     const id=inv.data().familyId;
+    if(id===fid){closeSheet();toast('את/ה כבר בלוח הזה.');return}
+    const oldFid=fid,mine=bring&&oldFid?{tasks:cloudTasks.slice(),shopping:S.shopping.slice(),contacts:S.contacts.slice(),members:S.members.slice(),me:member(myId)}:null;
     await fdb.collection('families').doc(id).collection('users').doc(uid).set({joinedAt:Date.now(),code,memberId:''});
     await fdb.collection('userIndex').doc(uid).set({familyId:id});
-    closeSheet();myId='';lsSet('me','');askedWho=false;openFamily(id);toast('הצטרפת ללוח המשפחה!');
+    let moved=0;
+    if(mine){
+      const nref=fdb.collection('families').doc(id);
+      const [nm,nt,ns,nc]=await Promise.all(['members','tasks','shopping','contacts'].map(c=>nref.collection(c).get()));
+      const byName=new Map(nm.docs.map(d=>[String(d.data().name||'').trim(),d.id]));
+      const nameOf=new Map(mine.members.map(m=>[m.id,String(m.name||'').trim()]));
+      const remap=ids=>(ids||[]).map(i=>byName.get(nameOf.get(i))).filter(Boolean);
+      const keys=new Set(nt.docs.flatMap(d=>{const x=d.data();return [d.id,(x.title||'')+'|'+(x.date||'')]}));
+      const shopKeys=new Set(ns.docs.map(d=>String(d.data().name||'').trim()+'|'+!!d.data().done));
+      const conKeys=new Set(nc.docs.map(d=>String(d.data().name||'').trim()));
+      const writes=[];
+      mine.tasks.forEach(t=>{if(keys.has(t.id)||keys.has((t.title||'')+'|'+(t.date||'')))return;writes.push(['tasks',t.id,{...clean(t),kids:remap(t.kids),parents:remap(t.parents),updatedAt:Date.now()}]);moved++});
+      mine.shopping.forEach(x=>{if(!shopKeys.has(String(x.name||'').trim()+'|'+!!x.done))writes.push(['shopping',x.id,{...clean(x),updatedAt:Date.now()}])});
+      mine.contacts.forEach(x=>{if(!conKeys.has(String(x.name||'').trim()))writes.push(['contacts',x.id,{...clean(x),updatedAt:Date.now()}])});
+      for(let i=0;i<writes.length;i+=400){const b=fdb.batch();writes.slice(i,i+400).forEach(([c,did,data])=>b.set(nref.collection(c).doc(did),data));await b.commit()}
+      const meNew=mine.me&&byName.get(String(mine.me.name||'').trim());
+      if(meNew)await nref.collection('users').doc(uid).update({memberId:meNew});
+      try{await fdb.collection('families').doc(oldFid).collection('users').doc(uid).delete()}catch(x){}
+    }
+    closeSheet();myId='';lsSet('me','');askedWho=false;openFamily(id);toast(moved?`הצטרפת ללוח המשפחה! ${moved} משימות שלך הועברו אליו.`:'הצטרפת ללוח המשפחה!');
   }catch(e){console.warn(e);toast('ההצטרפות לא הצליחה. בדקו את החיבור לאינטרנט ואת הקוד, ונסו שוב.')}
 }
 function mergeCloud(inc){
@@ -532,13 +557,14 @@ function inviteSection(){
     <div class="actions"><button class="btn primary" data-act="invite">שליחת הזמנה</button><button class="btn" data-act="qr">קוד QR לסריקה</button></div>
     <span class="lbl" style="margin:8px 0 0">מחוברים ללוח (${famUsers.length})</span>
     ${famUsers.map(u=>`<div class="mem"><span class="sw" style="--c:${member(u.memberId)?member(u.memberId).color:'var(--line)'}"></span><span class="n">${name(u)}${u.id===uid?'<small>הטלפון הזה</small>':''}</span>${u.id===uid?`<button class="btn" style="height:38px" data-act="who">החלפה</button>`:`<button class="btn" style="height:38px" data-act="kick" data-id="${u.id}">ניתוק</button>`}</div>`).join('')}
-    <div class="actions" style="margin-top:6px"><button class="btn" data-act="newcode">קוד הזמנה חדש</button><button class="btn danger" data-act="leaveask">יציאה מהלוח</button></div><div id="leaveBox"></div></div>`;
+    <div class="actions" style="margin-top:6px"><button class="btn" data-act="joinopen">הצטרפות ללוח אחר</button><button class="btn" data-act="newcode">קוד הזמנה חדש</button><button class="btn danger" data-act="leaveask">יציאה מהלוח</button></div><div id="leaveBox"></div></div>`;
 }
 function joinSheet(code){
   openSheet(`<h3>הצטרפות ללוח משפחה</h3><p class="hint">הקלידו את קוד ההזמנה שקיבלתם (8 תווים).</p>
     <form class="form" id="joinForm2" autocomplete="off"><input class="field" id="joinCode2" dir="ltr" maxlength="12" autocapitalize="characters" style="font-family:var(--f-num);font-size:1.3rem;letter-spacing:.15em;text-align:center" value="${esc(code||'')}" placeholder="ABCD2345" aria-label="קוד הזמנה">
     <button class="btn primary block" type="submit">הצטרפות</button></form>
-    ${fid?'<p class="hint">שימו לב: את/ה כבר מחובר/ת ללוח משפחה. הצטרפות תעביר את הטלפון הזה ללוח החדש.</p>':''}`);
+    ${fid?`<p class="hint">את/ה כבר מחובר/ת ללוח משפחה. ההצטרפות תעביר את הטלפון הזה ללוח החדש.</p>
+    <label class="inline" style="margin-top:8px"><input type="checkbox" id="joinBring" form="joinForm2" checked> להעביר ללוח החדש גם את ${cloudTasks.length} המשימות מהלוח הנוכחי (בלי כפילויות)</label>`:''}`);
 }
 function viewError(){return `<header class="top"><h1>לוח המשפחה</h1></header><div class="welcome"><h2 style="font-size:1.2rem">משהו לא נטען</h2><p>${esc(UI.error)}</p><button class="btn primary block" onclick="location.reload()">ניסיון נוסף</button></div>`}
 
@@ -798,7 +824,7 @@ function viewWelcome(){
     <form class="add-row" id="joinForm" autocomplete="off" style="margin-top:0"><input id="joinCode" dir="ltr" maxlength="12" autocapitalize="characters" placeholder="קוד הזמנה" aria-label="קוד הזמנה" style="font-family:var(--f-num);letter-spacing:.12em"><button class="btn primary" type="submit">הצטרפות</button></form></div>`:'';
   const migrate=hasLocal?`<div class="welcome"><h2 style="font-size:1.2rem">יש לך כבר לוח בטלפון הזה</h2><p>${localData.members.length} בני משפחה ו-${localData.tasks.length} משימות. אפשר להפוך אותו ללוח משותף ולהזמין אליו את כל המשפחה.</p>
     <button class="btn primary block" data-act="migrate">הפיכה ללוח משותף</button></div>`:'';
-  const create=`<div class="welcome"><h2>${CLOUD?'הקמת לוח למשפחה שלכם':'בואו נכיר את המשפחה'}</h2><p>כל ילד יקבל צבע משלו, כדי שבמבט אחד יהיה ברור של מי כל חוג ותור. אפשר לשנות הכל אחר כך בהגדרות.</p>
+  const create=`<div class="welcome"><h2>${CLOUD?'הקמת לוח למשפחה שלכם':'בואו נכיר את המשפחה'}</h2><p>כל ילד יקבל צבע משלו, כדי שבמבט אחד יהיה ברור של מי כל חוג ותור. אפשר לשנות הכל אחר כך בהגדרות.</p>${CLOUD?'<p class="alert info" style="margin-bottom:14px">רק בן משפחה אחד מקים את הלוח. כל השאר מצטרפים עם קוד ההזמנה שלו, אחרת כל אחד יראה לוח נפרד.</p>':''}
   <form class="form" id="welcomeForm" autocomplete="off">
     <div><label class="lbl" for="wFam">שם המשפחה</label><input class="field" id="wFam" placeholder="לדוגמה: כהן"></div>
     <div class="two"><div><label class="lbl" for="wP1">הורה 1</label><input class="field" id="wP1" placeholder="שם"></div><div><label class="lbl" for="wP2">הורה 2</label><input class="field" id="wP2" placeholder="שם"></div></div>
@@ -1637,7 +1663,7 @@ document.addEventListener('submit',async e=>{
     const names=i.value.split(/[,\n]/).map(s=>s.trim()).filter(Boolean);if(!names.length)return;i.value='';
     for(const n of names)await put('shopping',newId('shopping'),{name:n,store:st,done:false,createdAt:Date.now()});
     document.getElementById('shopInput')?.focus()}
-  if(e.target.id==='joinForm'||e.target.id==='joinForm2'){e.preventDefault();const i=e.target.querySelector('input');const b=e.target.querySelector('button');b.disabled=true;await joinFamily(i.value);b.disabled=false}
+  if(e.target.id==='joinForm'||e.target.id==='joinForm2'){e.preventDefault();const i=e.target.querySelector('input');const b=e.target.querySelector('button');b.disabled=true;const br=document.getElementById('joinBring');await joinFamily(i.value,!!(br&&br.checked));b.disabled=false}
   if(e.target.id==='welcomeForm'){e.preventDefault();
     const fam=document.getElementById('wFam').value.trim();
     const ps=['wP1','wP2'].map(i=>document.getElementById(i).value.trim()).filter(Boolean);
